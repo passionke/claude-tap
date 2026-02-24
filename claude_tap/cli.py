@@ -31,7 +31,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 log = logging.getLogger("claude-tap")
 
-__version__ = "0.1.6"
+__version__ = "0.1.7"
 
 
 async def run_claude(port: int, extra_args: list[str]) -> int:
