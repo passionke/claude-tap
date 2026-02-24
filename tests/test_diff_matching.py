@@ -141,6 +141,18 @@ def _msg_hash(msg: dict) -> str:
     return hashlib.md5(f"{msg.get('role', '')}:{content}".encode()).hexdigest()[:8]
 
 
+def _get_msg_hashes(entry: dict) -> list[str]:
+    """Get message hashes for an entry."""
+    return [_msg_hash(m) for m in entry.get("messages", [])]
+
+
+def _is_prefix_of(shorter: list[str], longer: list[str]) -> bool:
+    """Check if shorter is a prefix of longer."""
+    if not shorter or len(longer) < len(shorter):
+        return False
+    return shorter == longer[: len(shorter)]
+
+
 def find_diff_parent_by_prefix(entries: list[dict], idx: int) -> int | None:
     """Find the best diff parent for entry at idx using message prefix matching.
 
@@ -168,6 +180,55 @@ def find_diff_parent_by_prefix(entries: list[dict], idx: int) -> int | None:
                     best_parent = j
 
     return best_parent
+
+
+def find_next_by_prefix(entries: list[dict], idx: int) -> int | None:
+    """Find the next entry whose messages start with entries[idx]'s messages as prefix.
+
+    Mirrors the JS findNextSameModel() — picks the closest (smallest) extension.
+    Returns None if no match found.
+    """
+    current_hashes = _get_msg_hashes(entries[idx])
+    if not current_hashes:
+        return None
+
+    best_idx = None
+    best_len = float("inf")
+
+    for i in range(idx + 1, len(entries)):
+        candidate_hashes = _get_msg_hashes(entries[i])
+        if _is_prefix_of(current_hashes, candidate_hashes):
+            if len(candidate_hashes) < best_len:
+                best_len = len(candidate_hashes)
+                best_idx = i
+
+    return best_idx
+
+
+def compute_nav_button_states(entries: list[dict], cur_idx: int) -> tuple[bool, bool]:
+    """Compute whether prev/next nav buttons should be enabled for the diff at cur_idx.
+
+    Mirrors the JS updateNavButtons() logic after the bug fix.
+    Returns (prev_enabled, next_enabled).
+    """
+    prev_idx = find_diff_parent_by_prefix(entries, cur_idx)
+    if prev_idx is None:
+        # No diff can be shown for this entry
+        return (False, False)
+
+    # prev button: enabled if prevIdx itself has a diff parent
+    prev_of_prev = find_diff_parent_by_prefix(entries, prev_idx)
+    prev_enabled = prev_of_prev is not None
+
+    # next button: enabled if there's a next entry that has a valid diff parent
+    next_idx = find_next_by_prefix(entries, cur_idx)
+    if next_idx is not None:
+        next_prev = find_diff_parent_by_prefix(entries, next_idx)
+        next_enabled = next_prev is not None
+    else:
+        next_enabled = False
+
+    return (prev_enabled, next_enabled)
 
 
 class TestDiffParentMatching:
@@ -260,3 +321,126 @@ class TestEdgeCases:
             },
         ]
         assert find_diff_parent_by_prefix(entries, 1) == 0
+
+
+class TestFindNextByPrefix:
+    """Test findNextSameModel logic (find the next entry in the conversation chain)."""
+
+    def test_finds_next_in_chain(self):
+        """idx 3 -> idx 6 (next entry whose messages extend idx 3)."""
+        assert find_next_by_prefix(TRACE_ENTRIES, 3) == 6
+
+    def test_finds_closest_extension(self):
+        """idx 6 has multiple successors (7, 9, 10); pick the closest (smallest msg count)."""
+        # idx 7 has 5 msgs, idx 9 has 5 msgs, idx 10 has 7 msgs
+        # Both 7 and 9 have 5 msgs — should pick whichever comes first (7)
+        result = find_next_by_prefix(TRACE_ENTRIES, 6)
+        assert result == 7
+
+    def test_no_next_for_leaf_node(self):
+        """Entries at the end of a chain with no successors return None."""
+        # idx 10 has 7 messages — no entry after it extends this chain
+        assert find_next_by_prefix(TRACE_ENTRIES, 10) is None
+
+    def test_no_next_for_isolated_entry(self):
+        """Isolated entries (no successors) return None."""
+        # idx 8 is an unrelated haiku subagent
+        assert find_next_by_prefix(TRACE_ENTRIES, 8) is None
+
+    def test_no_next_for_empty_messages(self):
+        """Entry with empty messages cannot have a next."""
+        entries = [
+            {"model": "opus", "messages": []},
+            {"model": "opus", "messages": [{"role": "user", "content": "hi"}]},
+        ]
+        assert find_next_by_prefix(entries, 0) is None
+
+    def test_chain_traversal(self):
+        """Can traverse a full chain: 3 -> 6 -> 7."""
+        assert find_next_by_prefix(TRACE_ENTRIES, 3) == 6
+        assert find_next_by_prefix(TRACE_ENTRIES, 6) == 7
+
+
+class TestNavButtonStates:
+    """Test diff navigation button enabled/disabled states.
+
+    This tests the logic that was buggy: updateNavButtons() compared the object
+    returned by findPrevSameModel() directly to a number instead of using .idx,
+    causing the right button to always be disabled and the left button to never
+    be disabled.
+    """
+
+    def test_first_diff_in_chain_has_prev_disabled(self):
+        """When viewing turn 3→6 (first diff pair), prev should be disabled."""
+        # cur_idx=6, prev_idx=3. prev of 3 is None, so prev button disabled.
+        prev_enabled, next_enabled = compute_nav_button_states(TRACE_ENTRIES, 6)
+        assert not prev_enabled, "prev should be disabled at start of chain"
+        assert next_enabled, "next should be enabled (can go to 6→7)"
+
+    def test_middle_of_chain_prev_enabled(self):
+        """When viewing turn 6→7, prev should be enabled (can go back to 3→6)."""
+        prev_enabled, next_enabled = compute_nav_button_states(TRACE_ENTRIES, 7)
+        assert prev_enabled, "prev should be enabled (can go back to 3→6)"
+        # next is disabled because no entry after 7 extends its exact 5-message prefix
+        # (idx 10 diverges at msg[4]: "ok summarize" vs "suggestion mode")
+        assert not next_enabled
+
+    def test_end_of_chain_has_next_disabled(self):
+        """At the last entry in a chain, next should be disabled."""
+        prev_enabled, next_enabled = compute_nav_button_states(TRACE_ENTRIES, 10)
+        assert prev_enabled, "prev should be enabled (can go back)"
+        assert not next_enabled, "next should be disabled at end of chain"
+
+    def test_isolated_entry_with_parent_has_both_nav_correct(self):
+        """idx 5 (extends idx 4): no next, prev depends on idx 4 having a parent."""
+        prev_enabled, next_enabled = compute_nav_button_states(TRACE_ENTRIES, 5)
+        # idx 4 has no parent (new thread), so prev disabled
+        assert not prev_enabled, "prev should be disabled (idx 4 has no parent)"
+        assert not next_enabled, "next should be disabled (no successor extends idx 5)"
+
+    def test_simple_two_entry_chain(self):
+        """Simple chain of 2 entries: prev disabled on first diff, next disabled too."""
+        entries = [
+            {"model": "opus", "messages": [{"role": "user", "content": "hi"}]},
+            {
+                "model": "opus",
+                "messages": [
+                    {"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": "hello"},
+                    {"role": "user", "content": "more"},
+                ],
+            },
+        ]
+        prev_enabled, next_enabled = compute_nav_button_states(entries, 1)
+        assert not prev_enabled, "prev disabled (entry 0 has no parent)"
+        assert not next_enabled, "next disabled (no entry after 1)"
+
+    def test_three_entry_chain(self):
+        """Chain of 3: A→B→C. At B, both enabled; at A→B, prev disabled; at B→C, next disabled."""
+        entries = [
+            {"model": "opus", "messages": [{"role": "user", "content": "hi"}]},
+            {
+                "model": "opus",
+                "messages": [
+                    {"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": "hello"},
+                ],
+            },
+            {
+                "model": "opus",
+                "messages": [
+                    {"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": "hello"},
+                    {"role": "user", "content": "more"},
+                ],
+            },
+        ]
+        # At entry 1 (diff 0→1): prev disabled (0 has no parent), next enabled (2 exists)
+        p, n = compute_nav_button_states(entries, 1)
+        assert not p
+        assert n
+
+        # At entry 2 (diff 1→2): prev enabled (1 has parent 0), next disabled (no entry 3)
+        p, n = compute_nav_button_states(entries, 2)
+        assert p
+        assert not n

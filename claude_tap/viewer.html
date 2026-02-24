@@ -1936,9 +1936,9 @@ function showDiffForIdx(curIdx, triggerBtn, manualPrevIdx) {
     const prevBtn = overlay.querySelector('.diff-nav-prev');
     const nextBtn = overlay.querySelector('.diff-nav-next');
     if (!prevBtn || !nextBtn) return;
-    prevBtn.disabled = findPrevSameModel(prevIdx) < 0;
+    prevBtn.disabled = findPrevSameModel(prevIdx).idx < 0;
     const ni = findNextSameModel(curIdx);
-    nextBtn.disabled = !(ni >= 0 && findPrevSameModel(ni) >= 0);
+    nextBtn.disabled = !(ni >= 0 && findPrevSameModel(ni).idx >= 0);
   }
   updateNavButtons();
 
