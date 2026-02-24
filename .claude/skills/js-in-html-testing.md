@@ -4,51 +4,51 @@ description: Test JS logic embedded in HTML using two-layer strategy - Python un
 user_invocable: false
 ---
 
-# JS-in-HTML 分层测试策略
+# JS-in-HTML Two-Layer Testing Strategy
 
-对于嵌入在 HTML 中的 JavaScript 逻辑（如 viewer.html 的 diff 导航），分两层测试。
+For JavaScript logic embedded in HTML files (e.g., diff navigation in viewer.html), use a two-layer testing approach.
 
-## Layer 1: Python 单元测试（快速验证算法）
+## Layer 1: Python Unit Tests (fast algorithm verification)
 
-用 Python 复刻 JS 核心算法，在 pytest 中快速验证逻辑正确性。
+Replicate core JS algorithms in Python and verify correctness via pytest.
 
-适用于：纯计算逻辑、状态判断、匹配算法等不依赖 DOM 的函数。
+Best for: pure computation logic, state decisions, matching algorithms — anything that doesn't depend on the DOM.
 
-**示例**：`tests/test_diff_matching.py`
+**Example**: `tests/test_diff_matching.py`
 
 ```python
-# 复刻 JS 的 findPrevSameModel / findNextSameModel
+# Replicate JS findPrevSameModel / findNextSameModel
 def find_diff_parent_by_prefix(entries, idx):
     ...
 
 def find_next_by_prefix(entries, idx):
     ...
 
-# 复刻 JS 的 updateNavButtons 状态计算
+# Replicate JS updateNavButtons state computation
 def compute_nav_button_states(entries, cur_idx):
     prev_idx = find_diff_parent_by_prefix(entries, cur_idx)
     ...
     return (prev_enabled, next_enabled)
 ```
 
-优点：跑得快（0.02s）、不依赖浏览器、和项目 pytest 体系集成。
+Advantages: fast (0.02s), no browser dependency, integrates with existing pytest setup.
 
-## Layer 2: Playwright 浏览器集成测试（验证 DOM 交互）
+## Layer 2: Playwright Browser Integration Tests (DOM interaction verification)
 
-生成包含测试数据的 HTML，用 Playwright 在真实 Chromium 中验证 DOM 状态和用户交互。
+Generate HTML with test data embedded, open it in real Chromium via Playwright, and verify DOM state and user interactions.
 
-适用于：按钮 disabled 状态、overlay 显示/隐藏、键盘事件、click 导航等。
+Best for: button disabled states, overlay show/hide, keyboard events, click navigation, etc.
 
-**示例**：`tests/test_nav_browser.py`
+**Example**: `tests/test_nav_browser.py`
 
-### 构建测试 HTML
+### Building test HTML
 
 ```python
 def _build_test_html():
     template = Path("claude_tap/viewer.html").read_text()
     records = [json.dumps(e) for e in TEST_ENTRIES]
     data_js = "const EMBEDDED_TRACE_DATA = [\n" + ",\n".join(records) + "\n];\n"
-    # 注入数据到模板
+    # Inject data into template
     return template.replace(
         "<script>\nconst $ = s =>",
         f"<script>\n{data_js}</script>\n<script>\nconst $ = s =>",
@@ -72,7 +72,7 @@ def browser_page(html_file):
     pw.stop()
 ```
 
-### 验证 DOM 状态
+### Verifying DOM state
 
 ```python
 def _get_nav_state(page):
@@ -88,33 +88,33 @@ def _get_nav_state(page):
     }""")
 ```
 
-### 模拟用户交互
+### Simulating user interaction
 
 ```python
-# 点击按钮
+# Click buttons
 page.click(".diff-nav-next")
-# 键盘导航
+# Keyboard navigation
 page.keyboard.press("ArrowRight")
-# 通过 JS 调用内部函数
+# Call internal JS functions
 page.evaluate("selectEntry(2)")
 page.evaluate("showDiff()")
 ```
 
-## 注意事项
+## Notes
 
-- trace 数据中可能包含 `</script>` 文本（Claude 讨论代码时），会破坏 `<script>` 块解析，需转义：`line.replace("</script>", '</scr" + "ipt>')`
-- 测试数据需匹配 viewer 预期的 JSONL 格式（含 `turn`、`duration_ms`、`request_id`、`request.path` 等字段）
-- Playwright 需要 `uv pip install playwright` 安装
+- Trace data may contain `</script>` text (e.g., when Claude discusses code), which breaks `<script>` block parsing. Escape it: `line.replace("</script>", '</scr" + "ipt>')`
+- Test data must match the viewer's expected JSONL format (including `turn`, `duration_ms`, `request_id`, `request.path`, etc.)
+- Playwright requires `uv pip install playwright`
 
-## 运行
+## Running
 
 ```bash
-# 快速单元测试
+# Fast unit tests
 uv run pytest tests/test_diff_matching.py -v
 
-# 浏览器集成测试
+# Browser integration tests
 uv run pytest tests/test_nav_browser.py -v
 
-# 全部
+# All (excluding slow e2e)
 uv run pytest tests/ --ignore=tests/test_e2e.py -v
 ```

@@ -1,6 +1,6 @@
-## 提交前必须通过本地 CI
+## Pre-commit CI checks
 
-每次 `git commit` 之前，必须先跑通以下检查（和 GitHub CI 一致）：
+Before every `git commit`, run these checks locally (mirrors GitHub CI):
 
 ```bash
 uv run ruff check .
@@ -8,4 +8,8 @@ uv run ruff format --check .
 uv run pytest tests/ -x --timeout=60
 ```
 
-三项全过才能 commit。如果 format 不过，先 `uv run ruff format .` 修复再提交。
+All three must pass before committing. If format fails, run `uv run ruff format .` first.
+
+## Language
+
+All code, comments, commit messages, docs, and skill files in this project must be in English. The only exceptions are `README_zh.md` and other explicitly Chinese README files.
