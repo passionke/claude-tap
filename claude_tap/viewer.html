@@ -167,13 +167,10 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); heig
 .sidebar-item {
   padding: 10px 16px; cursor: pointer; transition: background .1s;
   border-bottom: 1px solid var(--border-light); position: relative;
+  border-left: 3px solid transparent;
 }
 .sidebar-item:hover { background: var(--bg-hover); }
 .sidebar-item.active { background: var(--blue-bg); }
-.sidebar-item.active::before {
-  content: ''; position: absolute; left: 0; top: 0; bottom: 0;
-  width: 3px; background: var(--blue); border-radius: 0 2px 2px 0;
-}
 .sidebar-item .si-row1 { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
 .sidebar-item .si-turn { font-size: 13px; font-weight: 600; color: var(--text); }
 .sidebar-item .si-model {
@@ -184,6 +181,10 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); heig
 .sidebar-item .si-tok { color: var(--green); font-family: var(--mono); font-weight: 500; }
 .sidebar-item .si-dur { color: var(--amber); font-family: var(--mono); font-weight: 500; }
 .sidebar-item .si-time { color: var(--text-tertiary); font-family: var(--mono); font-weight: 500; margin-left: auto; }
+.sidebar-item .si-task {
+  font-size: 10px; padding: 1px 5px; border-radius: 3px;
+  font-weight: 500; white-space: nowrap; max-width: 120px; overflow: hidden; text-overflow: ellipsis;
+}
 .sidebar-item .si-path {
   font-size: 10px; color: var(--text-tertiary); font-family: var(--mono);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 3px;
@@ -578,7 +579,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); heig
 
 /* ─── RTL support ─── */
 [dir="rtl"] #sidebar-wrap { border-right: none; border-left: 1px solid var(--border); }
-[dir="rtl"] .sidebar-item.active::before { left: auto; right: 0; border-radius: 2px 0 0 2px; }
+[dir="rtl"] .sidebar-item { border-left: none; border-right: 3px solid transparent; }
 [dir="rtl"] .si-model { margin-left: 0; margin-right: auto; }
 [dir="rtl"] .stats { margin-left: 0; margin-right: auto; }
 [dir="rtl"] .diff-field-arrow { transform: scaleX(-1); }
@@ -1436,6 +1437,67 @@ function visualNavigate(delta) {
 /* ─── Sidebar ─── */
 const collapsedGroups = new Set(); // Track collapsed model groups
 
+/* ─── Task type fingerprinting ─── */
+const TASK_COLORS = [
+  { color: 'var(--blue)',   bg: 'var(--blue-bg)' },
+  { color: 'var(--green)',  bg: 'var(--green-bg)' },
+  { color: 'var(--purple)', bg: 'var(--purple-bg)' },
+  { color: 'var(--amber)',  bg: 'var(--amber-bg)' },
+  { color: 'var(--cyan)',   bg: 'var(--cyan-bg)' },
+  { color: 'var(--orange)', bg: 'var(--orange-bg)' },
+  { color: 'var(--red)',    bg: 'var(--red-bg)' },
+  { color: 'var(--indigo)', bg: 'var(--purple-bg)' },
+];
+const taskFingerprintCache = new Map();
+
+function getTaskFingerprint(e) {
+  const rid = e.request_id;
+  if (taskFingerprintCache.has(rid)) return taskFingerprintCache.get(rid);
+  const body = e.request?.body;
+  if (!body) { taskFingerprintCache.set(rid, null); return null; }
+  // Extract system prompt signature (first meaningful line)
+  let sysText = '';
+  if (typeof body.system === 'string') sysText = body.system;
+  else if (Array.isArray(body.system)) {
+    for (const s of body.system) {
+      if (typeof s === 'string') { sysText = s; break; }
+      if (s.text) { sysText = s.text; break; }
+    }
+  }
+  const sysFirstLine = sysText.split('\n').find(l => l.trim()) || '';
+  // Tool names sorted for stable fingerprint
+  const tools = body.tools || [];
+  const toolKey = tools.map(t => t.name).sort().join(',');
+  // Build fingerprint from system prompt identity + tool set
+  const fp = sysFirstLine.slice(0, 100) + '|' + toolKey;
+  // Derive a short label
+  let label = '';
+  if (!sysText && !tools.length) label = 'simple';
+  else {
+    // Try to extract identity from system prompt patterns
+    const lower = sysFirstLine.toLowerCase();
+    if (lower.includes('claude code')) label = 'Claude Code';
+    else if (lower.includes('openclaw')) label = 'OpenClaw';
+    else if (lower.includes('subagent') || lower.includes('sub-agent')) label = 'Subagent';
+    else if (lower.includes('bash')) label = 'Bash';
+    else if (lower.includes('explore')) label = 'Explore';
+    else if (lower.includes('plan')) label = 'Plan';
+    else if (lower.includes('assistant')) label = sysFirstLine.match(/(?:inside|for|as)\s+(\w+)/i)?.[1] || 'Assistant';
+    else if (sysFirstLine.length > 0) label = sysFirstLine.slice(0, 20).trim();
+    else label = tools.length + ' tools';
+  }
+  const result = { fp, label };
+  taskFingerprintCache.set(rid, result);
+  return result;
+}
+
+function getTaskColor(fp) {
+  if (!fp) return TASK_COLORS[0];
+  let hash = 0;
+  for (let i = 0; i < fp.length; i++) hash = ((hash << 5) - hash + fp.charCodeAt(i)) | 0;
+  return TASK_COLORS[Math.abs(hash) % TASK_COLORS.length];
+}
+
 function createSidebarItem(e, i) {
   const item = document.createElement('div');
   item.className = 'sidebar-item';
@@ -1446,9 +1508,15 @@ function createSidebarItem(e, i) {
   const shortModel = model.replace(/^claude-/, '').replace(/-\d{8}$/, '');
   const badge = modelBadge(model);
   const timeStr = e.timestamp ? new Date(e.timestamp).toLocaleTimeString() : '';
+  // Task type coloring
+  const taskInfo = getTaskFingerprint(e);
+  const taskColor = taskInfo ? getTaskColor(taskInfo.fp) : TASK_COLORS[0];
+  item.style.borderLeftColor = taskColor.color;
+  const taskBadgeHtml = taskInfo && taskInfo.label ? `<span class="si-task" style="background:${taskColor.bg};color:${taskColor.color}" title="${esc(taskInfo.label)}">${esc(taskInfo.label)}</span>` : '';
   item.innerHTML = `
     <div class="si-row1">
       <span class="si-turn">${t('turn')} ${e.turn || '?'}</span>
+      ${taskBadgeHtml}
       <span class="si-model" style="background:${badge.bg};color:${badge.fg}">${esc(shortModel)}</span>
     </div>
     <div class="si-row2">
@@ -1503,7 +1571,14 @@ function renderSidebar(preserveDetail) {
   }
   buildVisualOrder();
   // Restore current selection if still valid, otherwise pick default
-  if (activeIdx >= 0 && activeIdx < filtered.length) {
+  // When preserving detail, find the entry by request_id (not index, which may shift)
+  let restoredIdx = -1;
+  if (preserveDetail && currentDetailRequestId) {
+    restoredIdx = filtered.findIndex(e => e.request_id === currentDetailRequestId);
+  }
+  if (restoredIdx >= 0) {
+    selectEntry(restoredIdx, { force: false });
+  } else if (activeIdx >= 0 && activeIdx < filtered.length) {
     selectEntry(activeIdx, { force: !preserveDetail });
   } else if (filtered.length) {
     // Default select first opus/sonnet entry, fall back to first entry
