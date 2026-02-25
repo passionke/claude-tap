@@ -2087,6 +2087,9 @@ async def _start_fake_https_upstream(tmpdir: Path) -> int:
             ),
             critical=False,
         )
+        # Python 3.13/OpenSSL may enforce AKI/SKI presence for custom test certs.
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
+        .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(key.public_key()), critical=False)
         .sign(key, hashes.SHA256())
     )
 

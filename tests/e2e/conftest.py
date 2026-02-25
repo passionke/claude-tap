@@ -70,10 +70,7 @@ def claude_env(installed_claude_tap):
 
     selected_mode = env.get("CLAUDE_TAP_REAL_E2E_PROXY_MODE", "auto").lower()
     if selected_mode not in {"auto", "reverse", "forward"}:
-        pytest.fail(
-            "CLAUDE_TAP_REAL_E2E_PROXY_MODE must be one of: auto, reverse, forward "
-            f"(got: {selected_mode})"
-        )
+        pytest.fail(f"CLAUDE_TAP_REAL_E2E_PROXY_MODE must be one of: auto, reverse, forward (got: {selected_mode})")
 
     if selected_mode == "auto":
         has_static_auth = bool(env.get("ANTHROPIC_API_KEY") or env.get("ANTHROPIC_AUTH_TOKEN"))
