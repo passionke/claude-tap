@@ -9,6 +9,7 @@ forwarding → JSONL recording.
 
 import asyncio
 import gzip
+import ipaddress
 import json
 import os
 import shutil
@@ -1863,6 +1864,307 @@ def test_parse_args_new_flags():
 
 
 ## ---------------------------------------------------------------------------
+## Test: CA certificate generation
+## ---------------------------------------------------------------------------
+
+
+def test_cert_generation():
+    """Test CA and per-host certificate generation."""
+    from claude_tap.certs import CertificateAuthority, ensure_ca
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ca_dir = Path(tmpdir)
+        ca_cert_path, ca_key_path = ensure_ca(ca_dir)
+
+        # CA files exist
+        assert ca_cert_path.exists(), "CA cert not created"
+        assert ca_key_path.exists(), "CA key not created"
+        assert ca_cert_path.name == "ca.pem"
+        assert ca_key_path.name == "ca-key.pem"
+        print("  OK: CA files created")
+
+        # Key has restricted permissions (owner-only)
+        key_mode = ca_key_path.stat().st_mode & 0o777
+        assert key_mode == 0o600, f"CA key permissions too open: {oct(key_mode)}"
+        print("  OK: CA key permissions restricted")
+
+        # Calling ensure_ca again reuses existing files
+        ca_cert_path2, ca_key_path2 = ensure_ca(ca_dir)
+        assert ca_cert_path2 == ca_cert_path
+        assert ca_cert_path2.read_bytes() == ca_cert_path.read_bytes()
+        print("  OK: ensure_ca reuses existing CA")
+
+        # Generate host cert
+        ca = CertificateAuthority(ca_cert_path, ca_key_path)
+        cert_pem, key_pem = ca.get_host_cert_pem("api.anthropic.com")
+        assert b"BEGIN CERTIFICATE" in cert_pem
+        assert b"BEGIN RSA PRIVATE KEY" in key_pem
+        print("  OK: host cert generated for api.anthropic.com")
+
+        # Cache hit
+        cert_pem2, key_pem2 = ca.get_host_cert_pem("api.anthropic.com")
+        assert cert_pem2 is cert_pem  # Same object (cached)
+        print("  OK: host cert cached")
+
+        # Different host gets different cert
+        cert_pem3, _ = ca.get_host_cert_pem("example.com")
+        assert cert_pem3 != cert_pem
+        print("  OK: different host gets different cert")
+
+        # SSL context creation
+        ssl_ctx = ca.make_ssl_context("api.anthropic.com")
+        import ssl
+
+        assert isinstance(ssl_ctx, ssl.SSLContext)
+        print("  OK: SSL context created")
+
+    print("  test_cert_generation PASSED")
+
+
+def test_parse_args_proxy_mode():
+    """Test --tap-proxy-mode flag parsing."""
+    from claude_tap import parse_args
+
+    # Default is reverse
+    a = parse_args([])
+    assert a.proxy_mode == "reverse"
+    print("  OK: default proxy_mode is 'reverse'")
+
+    # Explicit reverse
+    a = parse_args(["--tap-proxy-mode", "reverse"])
+    assert a.proxy_mode == "reverse"
+    print("  OK: --tap-proxy-mode reverse")
+
+    # Forward mode
+    a = parse_args(["--tap-proxy-mode", "forward"])
+    assert a.proxy_mode == "forward"
+    print("  OK: --tap-proxy-mode forward")
+
+    # Mix with other flags
+    a = parse_args(["--tap-proxy-mode", "forward", "--tap-port", "8080", "-p", "hello"])
+    assert a.proxy_mode == "forward"
+    assert a.port == 8080
+    assert a.claude_args == ["-p", "hello"]
+    print("  OK: forward mode with other flags")
+
+    print("  test_parse_args_proxy_mode PASSED")
+
+
+## ---------------------------------------------------------------------------
+## Test: Forward proxy CONNECT handler
+## ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_forward_proxy_connect():
+    """Test the forward proxy CONNECT/TLS flow with a fake HTTPS upstream."""
+    import ssl
+
+    import aiohttp
+
+    from claude_tap.certs import CertificateAuthority, ensure_ca
+    from claude_tap.forward_proxy import ForwardProxyServer
+    from claude_tap.trace import TraceWriter
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+        trace_path = tmpdir / "trace.jsonl"
+        ca_dir = tmpdir / "ca"
+
+        # Generate CA
+        ca_cert_path, ca_key_path = ensure_ca(ca_dir)
+        ca = CertificateAuthority(ca_cert_path, ca_key_path)
+
+        # Start a fake HTTPS upstream server
+        upstream_port = await _start_fake_https_upstream(tmpdir)
+        print(f"  Fake HTTPS upstream on port {upstream_port}")
+
+        # Start forward proxy (disable SSL verify for the upstream session
+        # since our fake upstream uses a self-signed cert)
+        writer = TraceWriter(trace_path)
+        upstream_ssl_ctx = ssl.create_default_context()
+        upstream_ssl_ctx.check_hostname = False
+        upstream_ssl_ctx.verify_mode = ssl.CERT_NONE
+        upstream_conn = aiohttp.TCPConnector(ssl=upstream_ssl_ctx)
+        session = aiohttp.ClientSession(connector=upstream_conn, auto_decompress=False)
+
+        server = ForwardProxyServer(
+            host="127.0.0.1",
+            port=0,
+            ca=ca,
+            writer=writer,
+            session=session,
+        )
+        proxy_port = await server.start()
+        print(f"  Forward proxy on port {proxy_port}")
+
+        try:
+            # Create an SSL context that trusts our CA
+            ssl_ctx = ssl.create_default_context()
+            ssl_ctx.load_verify_locations(str(ca_cert_path))
+
+            # Use aiohttp with our proxy to make an HTTPS request
+            # We connect to 127.0.0.1:<upstream_port> through the proxy
+            conn = aiohttp.TCPConnector(ssl=ssl_ctx)
+            proxy_url = f"http://127.0.0.1:{proxy_port}"
+
+            async with aiohttp.ClientSession(connector=conn, auto_decompress=False) as client:
+                # Make request through the proxy to our fake upstream
+                async with client.post(
+                    f"https://127.0.0.1:{upstream_port}/v1/messages",
+                    proxy=proxy_url,
+                    json={
+                        "model": "claude-test-model",
+                        "max_tokens": 100,
+                        "messages": [{"role": "user", "content": "hello"}],
+                    },
+                    headers={
+                        "x-api-key": "sk-ant-test-key-12345678",
+                        "anthropic-version": "2023-06-01",
+                    },
+                ) as resp:
+                    assert resp.status == 200, f"Expected 200, got {resp.status}"
+                    body = await resp.json()
+                    assert body["content"][0]["text"] == "Hello from HTTPS!"
+                    print("  OK: CONNECT + TLS termination works")
+
+            # Allow trace to be written
+            await asyncio.sleep(0.1)
+
+            # Check trace was recorded
+            writer.close()
+            trace_text = trace_path.read_text().strip()
+            assert trace_text, "No trace recorded"
+            records = [json.loads(line) for line in trace_text.splitlines()]
+            assert len(records) == 1
+            assert records[0]["request"]["method"] == "POST"
+            assert "/v1/messages" in records[0]["request"]["path"]
+            assert records[0]["response"]["status"] == 200
+            print("  OK: trace recorded correctly")
+
+            # Check header redaction
+            hdrs = {k.lower(): v for k, v in records[0]["request"]["headers"].items()}
+            api_key = hdrs.get("x-api-key", "")
+            assert api_key.endswith("..."), f"API key not redacted: {api_key}"
+            print("  OK: API key redacted in trace")
+
+        finally:
+            await server.stop()
+            await session.close()
+
+    print("  test_forward_proxy_connect PASSED")
+
+
+async def _start_fake_https_upstream(tmpdir: Path) -> int:
+    """Start a fake HTTPS server for testing. Returns the port."""
+    import ssl as ssl_module
+
+    # Generate a self-signed cert for the fake upstream
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    import datetime
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now)
+        .not_valid_after(now + datetime.timedelta(days=1))
+        .add_extension(
+            x509.SubjectAlternativeName(
+                [
+                    x509.DNSName("127.0.0.1"),
+                    x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
+                ]
+            ),
+            critical=False,
+        )
+        .sign(key, hashes.SHA256())
+    )
+
+    cert_path = tmpdir / "upstream.pem"
+    key_path = tmpdir / "upstream-key.pem"
+    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(
+        key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.TraditionalOpenSSL,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
+
+    ssl_ctx = ssl_module.SSLContext(ssl_module.PROTOCOL_TLS_SERVER)
+    ssl_ctx.load_cert_chain(str(cert_path), str(key_path))
+
+    async def handle_client(reader, writer):
+        try:
+            await asyncio.wait_for(reader.readline(), timeout=10)
+            # Read headers
+            headers = {}
+            while True:
+                line = await asyncio.wait_for(reader.readline(), timeout=5)
+                if line in (b"\r\n", b"\n", b""):
+                    break
+                decoded = line.decode("utf-8", errors="replace").strip()
+                if ":" in decoded:
+                    k, v = decoded.split(":", 1)
+                    headers[k.strip()] = v.strip()
+
+            # Read body (drain it so the connection is clean)
+            cl = headers.get("Content-Length") or headers.get("content-length", "0")
+            try:
+                length = int(cl)
+                if length > 0:
+                    await asyncio.wait_for(reader.readexactly(length), timeout=10)
+            except (ValueError, asyncio.IncompleteReadError):
+                pass
+
+            # Return a simple JSON response
+            resp_body = json.dumps(
+                {
+                    "id": "msg_test_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Hello from HTTPS!"}],
+                    "model": "claude-test-model",
+                    "usage": {"input_tokens": 10, "output_tokens": 5},
+                    "stop_reason": "end_turn",
+                }
+            ).encode()
+
+            content_length_line = f"Content-Length: {len(resp_body)}\r\n".encode()
+            response = (
+                b"HTTP/1.1 200 OK\r\n"
+                + b"Content-Type: application/json\r\n"
+                + content_length_line
+                + b"\r\n"
+                + resp_body
+            )
+            writer.write(response)
+            await writer.drain()
+        except Exception:
+            pass
+        finally:
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
+
+    server = await asyncio.start_server(handle_client, "127.0.0.1", 0, ssl=ssl_ctx)
+    port = server.sockets[0].getsockname()[1]
+    return port
+
+
+## ---------------------------------------------------------------------------
 ## Run all tests
 ## ---------------------------------------------------------------------------
 
@@ -1877,6 +2179,8 @@ if __name__ == "__main__":
     # Unit tests (fast, no subprocesses)
     test_parse_args()
     test_parse_args_new_flags()
+    test_parse_args_proxy_mode()
+    test_cert_generation()
     test_filter_headers()
     test_sse_reassembler()
     test_version_tuple()

@@ -21,6 +21,8 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
+from claude_tap.certs import CertificateAuthority, ensure_ca
+from claude_tap.forward_proxy import ForwardProxyServer
 from claude_tap.live import LiveViewerServer
 from claude_tap.proxy import proxy_handler
 from claude_tap.trace import TraceWriter
@@ -40,7 +42,12 @@ def _open_browser(url: str) -> None:
     threading.Thread(target=lambda: webbrowser.open(url), daemon=True).start()
 
 
-async def run_claude(port: int, extra_args: list[str]) -> int:
+async def run_claude(
+    port: int,
+    extra_args: list[str],
+    proxy_mode: str = "reverse",
+    ca_cert_path: Path | None = None,
+) -> int:
     if shutil.which("claude") is None:
         print(
             "\nError: 'claude' command not found in PATH.\n"
@@ -50,15 +57,32 @@ async def run_claude(port: int, extra_args: list[str]) -> int:
         return 1
 
     env = os.environ.copy()
-    env["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{port}"
-    env["NO_PROXY"] = "127.0.0.1"
+
+    if proxy_mode == "forward":
+        proxy_url = f"http://127.0.0.1:{port}"
+        env["HTTP_PROXY"] = proxy_url
+        env["HTTPS_PROXY"] = proxy_url
+        env["ALL_PROXY"] = proxy_url
+        if ca_cert_path:
+            env["NODE_EXTRA_CA_CERTS"] = str(ca_cert_path)
+        # Don't set ANTHROPIC_BASE_URL in forward mode
+    else:
+        env["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{port}"
+        env["NO_PROXY"] = "127.0.0.1"
+
     # Bypass Claude Code nesting detection
     env.pop("CLAUDECODE", None)
     env.pop("CLAUDE_CODE_SSE_PORT", None)
 
     cmd = ["claude"] + extra_args
     print(f"\n🚀 Starting Claude Code: {' '.join(cmd)}")
-    print(f"   ANTHROPIC_BASE_URL=http://127.0.0.1:{port}\n")
+    if proxy_mode == "forward":
+        print(f"   HTTPS_PROXY=http://127.0.0.1:{port}")
+        if ca_cert_path:
+            print(f"   NODE_EXTRA_CA_CERTS={ca_cert_path}")
+    else:
+        print(f"   ANTHROPIC_BASE_URL=http://127.0.0.1:{port}")
+    print()
 
     # Give child its own process group and make it the foreground group
     # so the TUI app has full terminal control (e.g. Cmd+Delete, Ctrl+U).
@@ -144,26 +168,47 @@ async def async_main(args: argparse.Namespace):
 
     session = aiohttp.ClientSession(auto_decompress=False)
 
-    app = web.Application(client_max_size=0)  # No body size limit (proxy must forward everything)
-    app["trace_ctx"] = {
-        "target_url": args.target,
-        "writer": writer,
-        "session": session,
-        "turn_counter": 0,
-    }
-    app.router.add_route("*", "/{path_info:.*}", proxy_handler)
+    # Forward proxy mode: raw TCP server with CONNECT/TLS termination
+    # Reverse proxy mode: aiohttp web app (current behavior)
+    forward_server: ForwardProxyServer | None = None
+    runner: web.AppRunner | None = None
+    ca_cert_path: Path | None = None
 
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, args.host, args.port)
-    await site.start()
+    if args.proxy_mode == "forward":
+        ca_cert_path, ca_key_path = ensure_ca()
+        ca = CertificateAuthority(ca_cert_path, ca_key_path)
+        forward_server = ForwardProxyServer(
+            host=args.host,
+            port=args.port,
+            ca=ca,
+            writer=writer,
+            session=session,
+        )
+        actual_port = await forward_server.start()
+        print(f"🔍 claude-tap v{__version__} forward proxy on http://{args.host}:{actual_port}")
+        print(f"   CA cert: {ca_cert_path}")
+    else:
+        app = web.Application(client_max_size=0)  # No body size limit (proxy must forward everything)
+        app["trace_ctx"] = {
+            "target_url": args.target,
+            "writer": writer,
+            "session": session,
+            "turn_counter": 0,
+        }
+        app.router.add_route("*", "/{path_info:.*}", proxy_handler)
 
-    # Resolve actual port (site._server is a private API; fall back to args.port)
-    try:
-        actual_port = site._server.sockets[0].getsockname()[1]
-    except (AttributeError, IndexError, OSError):
-        actual_port = args.port
-    print(f"🔍 claude-tap v{__version__} listening on http://{args.host}:{actual_port}")
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, args.host, args.port)
+        await site.start()
+
+        # Resolve actual port (site._server is a private API; fall back to args.port)
+        try:
+            actual_port = site._server.sockets[0].getsockname()[1]
+        except (AttributeError, IndexError, OSError):
+            actual_port = args.port
+        print(f"🔍 claude-tap v{__version__} listening on http://{args.host}:{actual_port}")
+
     print(f"📁 Trace file: {trace_path}")
 
     # Background update check
@@ -183,7 +228,12 @@ async def async_main(args: argparse.Namespace):
     try:
         if not args.no_launch:
             try:
-                exit_code = await run_claude(actual_port, args.claude_args)
+                exit_code = await run_claude(
+                    actual_port,
+                    args.claude_args,
+                    proxy_mode=args.proxy_mode,
+                    ca_cert_path=ca_cert_path,
+                )
             except asyncio.CancelledError:
                 pass
         else:
@@ -198,10 +248,16 @@ async def async_main(args: argparse.Namespace):
             await session.close()
         except Exception:
             pass
-        try:
-            await runner.cleanup()
-        except Exception:
-            pass
+        if forward_server:
+            try:
+                await forward_server.stop()
+            except Exception:
+                pass
+        if runner:
+            try:
+                await runner.cleanup()
+            except Exception:
+                pass
 
         # Stop live viewer server if running
         if live_server:
@@ -283,6 +339,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="https://api.anthropic.com",
         dest="target",
         help="Upstream API URL (default: https://api.anthropic.com)",
+    )
+    tap_parser.add_argument(
+        "--tap-proxy-mode",
+        choices=["reverse", "forward"],
+        default="reverse",
+        dest="proxy_mode",
+        help="Proxy mode: 'reverse' sets ANTHROPIC_BASE_URL (default), "
+        "'forward' sets HTTPS_PROXY with CONNECT/TLS termination",
     )
     tap_parser.add_argument(
         "--tap-no-launch", action="store_true", dest="no_launch", help="Only start the proxy, don't launch Claude"
