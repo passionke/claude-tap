@@ -1,10 +1,13 @@
 """Real E2E tests using actual Claude CLI.
 
-These tests run claude-tap in its normal mode: wrapping the `claude` CLI
-as a child process. claude-tap handles ANTHROPIC_BASE_URL internally.
+These tests run claude-tap as a subprocess and execute the real `claude` CLI.
+Proxy mode is selected by fixture config:
+  - reverse mode uses ANTHROPIC_BASE_URL (recommended when ANTHROPIC_API_KEY is set)
+  - forward mode uses HTTPS_PROXY + CONNECT/TLS MITM (OAuth-compatible in principle)
 
 Prerequisites:
   - `claude` CLI installed and authenticated
+  - For reverse mode: set ANTHROPIC_API_KEY
   - Run with: uv run --extra dev pytest tests/e2e/ --run-real-e2e -v --timeout=300
 """
 
@@ -17,12 +20,14 @@ import pytest
 
 
 def _run_claude_tap(
-    env: dict, trace_dir: str, prompt: str, extra_claude_args: list[str] | None = None, timeout: float = 120
+    env: dict,
+    trace_dir: str,
+    prompt: str,
+    proxy_mode: str = "forward",
+    extra_claude_args: list[str] | None = None,
+    timeout: float = 120,
 ) -> subprocess.CompletedProcess:
-    """Run claude-tap wrapping `claude -p <prompt>`.
-
-    Returns the CompletedProcess with stdout/stderr.
-    """
+    """Run claude-tap wrapping `claude -p <prompt>` with the selected mode."""
     cmd = [
         sys.executable,
         "-m",
@@ -30,6 +35,8 @@ def _run_claude_tap(
         "--tap-output-dir",
         trace_dir,
         "--tap-no-update-check",
+        "--tap-proxy-mode",
+        proxy_mode,
         "--",  # separator: everything after goes to claude
         "-p",
         prompt,
@@ -67,9 +74,9 @@ class TestRealProxy:
     @pytest.mark.timeout(180)
     def test_single_turn(self, claude_env):
         """Single prompt-response: verify trace captures the exchange."""
-        env, trace_dir = claude_env
+        env, trace_dir, proxy_mode = claude_env
 
-        result = _run_claude_tap(env, trace_dir, "Reply with exactly: HELLO_E2E_TEST")
+        result = _run_claude_tap(env, trace_dir, "Reply with exactly: HELLO_E2E_TEST", proxy_mode=proxy_mode)
 
         assert result.returncode == 0, (
             f"claude-tap failed (code {result.returncode}):\n"
@@ -80,28 +87,39 @@ class TestRealProxy:
         records = _read_trace_records(trace_dir)
         assert len(records) >= 1, f"Expected at least 1 trace record, got {len(records)}"
 
-        # Verify trace structure
-        record = records[0]
+        # OAuth/SDK may issue several preflight calls before /v1/messages.
+        msg_records = [r for r in records if "/v1/messages" in r.get("request", {}).get("path", "")]
+        assert msg_records, "Expected at least one /v1/messages trace record"
+
+        # Verify trace structure on a messages call
+        record = msg_records[0]
         assert "request" in record
         assert "response" in record
         assert record["request"]["method"] == "POST"
-        assert "/v1/messages" in record["request"]["path"]
 
-        # Verify response content captured
-        resp_body = record["response"].get("body", {})
-        if isinstance(resp_body, dict):
+        # Verify response content captured from any messages response
+        found_expected_text = False
+        for rec in msg_records:
+            resp_body = rec.get("response", {}).get("body", {})
+            if not isinstance(resp_body, dict):
+                continue
             content = resp_body.get("content", [])
             texts = [c.get("text", "") for c in content if c.get("type") == "text"]
             full_text = " ".join(texts)
-            assert "HELLO_E2E_TEST" in full_text, f"Expected HELLO_E2E_TEST in trace response:\n{full_text[:500]}"
+            if "HELLO_E2E_TEST" in full_text:
+                found_expected_text = True
+                break
+        assert found_expected_text, "Expected HELLO_E2E_TEST in at least one /v1/messages trace response"
 
     @pytest.mark.timeout(300)
     def test_multi_turn(self, claude_env):
         """Two calls with -c flag: verify conversation memory works."""
-        env, trace_dir = claude_env
+        env, trace_dir, proxy_mode = claude_env
 
         # Turn 1: ask to remember a code
-        r1 = _run_claude_tap(env, trace_dir, "Remember this code: ZEBRA_42. Just confirm you remember it.")
+        r1 = _run_claude_tap(
+            env, trace_dir, "Remember this code: ZEBRA_42. Just confirm you remember it.", proxy_mode=proxy_mode
+        )
         assert r1.returncode == 0, f"Turn 1 failed:\nstdout: {r1.stdout[:500]}\nstderr: {r1.stderr[:500]}"
 
         # Turn 2: with -c (continue) ask to recall
@@ -109,6 +127,7 @@ class TestRealProxy:
             env,
             trace_dir,
             "What was the code I asked you to remember?",
+            proxy_mode=proxy_mode,
             extra_claude_args=["-c"],
         )
         assert r2.returncode == 0, f"Turn 2 failed:\nstdout: {r2.stdout[:500]}\nstderr: {r2.stderr[:500]}"
@@ -121,9 +140,11 @@ class TestRealProxy:
     @pytest.mark.timeout(180)
     def test_tool_use(self, claude_env):
         """Prompt that triggers tool use: verify trace captures tool_use blocks."""
-        env, trace_dir = claude_env
+        env, trace_dir, proxy_mode = claude_env
 
-        result = _run_claude_tap(env, trace_dir, "What files are in the current directory? Use ls to check.")
+        result = _run_claude_tap(
+            env, trace_dir, "What files are in the current directory? Use ls to check.", proxy_mode=proxy_mode
+        )
         assert result.returncode == 0, f"Tool use test failed:\n{result.stdout[:500]}\n{result.stderr[:500]}"
 
         records = _read_trace_records(trace_dir)
@@ -146,9 +167,9 @@ class TestRealProxy:
     @pytest.mark.timeout(180)
     def test_html_viewer_generated(self, claude_env):
         """Verify .html viewer file is generated after a session."""
-        env, trace_dir = claude_env
+        env, trace_dir, proxy_mode = claude_env
 
-        result = _run_claude_tap(env, trace_dir, "Reply with exactly: HTML_CHECK")
+        result = _run_claude_tap(env, trace_dir, "Reply with exactly: HTML_CHECK", proxy_mode=proxy_mode)
         assert result.returncode == 0
 
         # claude-tap generates HTML on exit (which happens after claude subprocess finishes)
@@ -167,9 +188,9 @@ class TestRealProxy:
     @pytest.mark.timeout(180)
     def test_api_key_redaction(self, claude_env):
         """Verify no raw API keys appear in trace files."""
-        env, trace_dir = claude_env
+        env, trace_dir, proxy_mode = claude_env
 
-        result = _run_claude_tap(env, trace_dir, "Reply with exactly: REDACTION_CHECK")
+        result = _run_claude_tap(env, trace_dir, "Reply with exactly: REDACTION_CHECK", proxy_mode=proxy_mode)
         assert result.returncode == 0
 
         records = _read_trace_records(trace_dir)
@@ -192,9 +213,9 @@ class TestRealProxy:
     @pytest.mark.timeout(180)
     def test_streaming_sse_capture(self, claude_env):
         """Verify SSE events are captured in streaming responses."""
-        env, trace_dir = claude_env
+        env, trace_dir, proxy_mode = claude_env
 
-        result = _run_claude_tap(env, trace_dir, "Reply with exactly: SSE_CAPTURE_TEST")
+        result = _run_claude_tap(env, trace_dir, "Reply with exactly: SSE_CAPTURE_TEST", proxy_mode=proxy_mode)
         assert result.returncode == 0
 
         records = _read_trace_records(trace_dir)
@@ -215,9 +236,9 @@ class TestRealProxy:
     @pytest.mark.timeout(180)
     def test_trace_summary(self, claude_env):
         """Verify claude-tap prints trace summary with API call count."""
-        env, trace_dir = claude_env
+        env, trace_dir, proxy_mode = claude_env
 
-        result = _run_claude_tap(env, trace_dir, "Reply with exactly: SUMMARY_CHECK")
+        result = _run_claude_tap(env, trace_dir, "Reply with exactly: SUMMARY_CHECK", proxy_mode=proxy_mode)
         assert result.returncode == 0
 
         assert "Trace summary" in result.stdout, f"Expected 'Trace summary' in stdout:\n{result.stdout[:500]}"

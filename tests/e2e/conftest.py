@@ -51,16 +51,12 @@ def installed_claude_tap():
 
 @pytest.fixture
 def claude_env(installed_claude_tap):
-    """Run claude-tap as a wrapper around claude -p (normal usage mode).
+    """Provide env, trace_dir, and selected proxy mode for real E2E runs.
 
-    claude-tap launches claude as a child process and sets ANTHROPIC_BASE_URL
-    internally. This fixture provides the trace_dir and a helper to run
-    prompts through claude-tap.
-
-    Note: Claude Code uses OAuth authentication which is bound to the official
-    API endpoint. Setting ANTHROPIC_BASE_URL manually causes 403 errors.
-    Instead, we use claude-tap's normal mode where it wraps the claude CLI
-    and manages the env vars itself.
+    Mode selection:
+      - CLAUDE_TAP_REAL_E2E_PROXY_MODE=reverse|forward|auto (default auto)
+      - auto picks reverse when ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN is set,
+        otherwise forward.
     """
     trace_dir = tempfile.mkdtemp(prefix="claude_tap_real_e2e_")
 
@@ -72,8 +68,18 @@ def claude_env(installed_claude_tap):
     # Disable update check in tests
     env["CLAUDE_TAP_PYPI_URL"] = "http://127.0.0.1:1/invalid"
 
-    yield env, trace_dir
+    selected_mode = env.get("CLAUDE_TAP_REAL_E2E_PROXY_MODE", "auto").lower()
+    if selected_mode not in {"auto", "reverse", "forward"}:
+        pytest.fail(
+            "CLAUDE_TAP_REAL_E2E_PROXY_MODE must be one of: auto, reverse, forward "
+            f"(got: {selected_mode})"
+        )
+
+    if selected_mode == "auto":
+        has_static_auth = bool(env.get("ANTHROPIC_API_KEY") or env.get("ANTHROPIC_AUTH_TOKEN"))
+        selected_mode = "reverse" if has_static_auth else "forward"
+
+    yield env, trace_dir, selected_mode
 
     # Keep trace dir on failure for debugging; clean on success
-    # (pytest captures can be inspected)
     shutil.rmtree(trace_dir, ignore_errors=True)

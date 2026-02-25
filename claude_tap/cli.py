@@ -58,13 +58,36 @@ async def run_claude(
 
     env = os.environ.copy()
 
+    cmd_args = list(extra_args)
+
     if proxy_mode == "forward":
         proxy_url = f"http://127.0.0.1:{port}"
+        # Set both upper/lower-case variants for tools that read one form only.
         env["HTTP_PROXY"] = proxy_url
         env["HTTPS_PROXY"] = proxy_url
         env["ALL_PROXY"] = proxy_url
+        env["http_proxy"] = proxy_url
+        env["https_proxy"] = proxy_url
+        env["all_proxy"] = proxy_url
         if ca_cert_path:
             env["NODE_EXTRA_CA_CERTS"] = str(ca_cert_path)
+        # Claude Code may source proxy env from settings rather than process env.
+        # Inject equivalent settings unless user already provided --settings.
+        has_settings_arg = any(arg == "--settings" or arg.startswith("--settings=") for arg in cmd_args)
+        if not has_settings_arg:
+            settings_payload: dict[str, dict[str, str]] = {
+                "env": {
+                    "HTTP_PROXY": proxy_url,
+                    "HTTPS_PROXY": proxy_url,
+                    "ALL_PROXY": proxy_url,
+                    "http_proxy": proxy_url,
+                    "https_proxy": proxy_url,
+                    "all_proxy": proxy_url,
+                }
+            }
+            if ca_cert_path:
+                settings_payload["env"]["NODE_EXTRA_CA_CERTS"] = str(ca_cert_path)
+            cmd_args = ["--settings", json.dumps(settings_payload, separators=(",", ":"))] + cmd_args
         # Don't set ANTHROPIC_BASE_URL in forward mode
     else:
         env["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{port}"
@@ -74,7 +97,7 @@ async def run_claude(
     env.pop("CLAUDECODE", None)
     env.pop("CLAUDE_CODE_SSE_PORT", None)
 
-    cmd = ["claude"] + extra_args
+    cmd = ["claude"] + cmd_args
     print(f"\n🚀 Starting Claude Code: {' '.join(cmd)}")
     if proxy_mode == "forward":
         print(f"   HTTPS_PROXY=http://127.0.0.1:{port}")
@@ -166,7 +189,10 @@ async def async_main(args: argparse.Namespace):
     aiohttp_server_log.addHandler(file_handler)
     aiohttp_server_log.propagate = False
 
-    session = aiohttp.ClientSession(auto_decompress=False)
+    # Honor system proxy env (HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY) for
+    # outbound upstream requests. This is important when users route traffic
+    # through tools like Clash/VPN.
+    session = aiohttp.ClientSession(auto_decompress=False, trust_env=True)
 
     # Forward proxy mode: raw TCP server with CONNECT/TLS termination
     # Reverse proxy mode: aiohttp web app (current behavior)

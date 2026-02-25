@@ -50,11 +50,11 @@ class TraceWriter:
     def _update_stats(self, record: dict) -> None:
         """Extract token usage from record and update totals."""
         req_body = record.get("request", {}).get("body", {})
-        model = req_body.get("model", "unknown")
+        model = req_body.get("model", "unknown") if isinstance(req_body, dict) else "unknown"
         self.models_used[model] = self.models_used.get(model, 0) + 1
 
         resp_body = record.get("response", {}).get("body", {})
-        usage = resp_body.get("usage", {})
+        usage = resp_body.get("usage", {}) if isinstance(resp_body, dict) else {}
         if not usage and isinstance(resp_body, dict):
             usage = resp_body
 
