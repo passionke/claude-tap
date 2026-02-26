@@ -27,6 +27,17 @@ tmux send-keys -t demo "claude-tap -- claude" Enter
 tmux send-keys -t demo "exit" Enter
 ```
 
+If prompts include special characters, send literal text:
+```bash
+tmux send-keys -t demo -l "Use the shell tool to run command ls in the current directory."
+tmux send-keys -t demo Enter
+```
+
+For a stable real E2E smoke run (non-`-p`) before recording:
+```bash
+scripts/run_real_e2e_tmux.sh
+```
+
 ### Step 2: Render .cast to PNG Frames
 
 Use `cast_to_gif_ultra.py` with **pyte** terminal emulator:

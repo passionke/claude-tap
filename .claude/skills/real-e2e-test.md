@@ -20,6 +20,19 @@ real Claude CLI, and verify trace output.
 uv run pytest tests/e2e/ --run-real-e2e --timeout=300 -v
 ```
 
+### Run a real forward-proxy smoke flow (two prompts + trace/html)
+```bash
+scripts/run_real_e2e.sh
+```
+
+Optional overrides:
+```bash
+PROMPT_ONE="Reply with exactly: REAL_E2E_TURN_ONE_OK" \
+PROMPT_TWO="Thanks." \
+CLAUDE_ARGS="--model sonnet" \
+scripts/run_real_e2e.sh
+```
+
 ### Run a single test
 ```bash
 uv run pytest tests/e2e/test_real_proxy.py::TestRealProxy::test_single_turn --run-real-e2e --timeout=180 -v -s
@@ -37,6 +50,8 @@ uv run pytest tests/e2e/ --run-real-e2e --timeout=300 -v -s --tb=long
 - Tests use auto-assigned ports to avoid conflicts
 - Timeouts are generous (180-300s) because real Claude API calls are involved
 - Trace directories are cleaned up automatically after each test
+- `scripts/run_real_e2e.sh` avoids interactive key submission entirely by using:
+  first turn `-p "<prompt1>"`, second turn `-p "<prompt2>" -c` in the same working directory.
 
 ## Test Cases
 
