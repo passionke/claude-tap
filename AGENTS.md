@@ -26,6 +26,14 @@ git fetch origin           # Get latest remote state
 
 Ensure you are working on a clean, up-to-date branch.
 
+Before opening or merging a PR, also run:
+
+```bash
+git rebase origin/main     # Rebase onto latest main
+uv lock --check            # Ensure lockfile is consistent
+uv run pytest tests/ -x --timeout=60  # Re-verify after rebase
+```
+
 ## Compounding Engineering
 
 Record lessons learned so they compound over time:
@@ -51,6 +59,9 @@ create an entry documenting what happened, root cause, and the lesson.
 | Modify only relevant files | Minimize blast radius |
 | Trust type invariants | Don't add redundant runtime checks for typed values |
 | Keep functions focused | One function, one purpose |
+| Prefer POSIX shell tools in scripts | Scripts must run in bare environments |
+| Use `grep -F` for fixed-string matches in scripts | Portable replacement for `rg` in CI/fresh machines |
+| Read package version from metadata | Avoid stale hardcoded version strings |
 
 ### DON'T
 
@@ -62,6 +73,14 @@ create an entry documenting what happened, root cause, and the lesson.
 | Commit generated files | Regenerate from source |
 | Mix refactoring with feature work | One concern per commit |
 | Add backwards-compat shims for unused code | Just delete it |
+| Depend on non-portable shell tools without checks | `rg`/`jq`/`fd` may be missing in CI or fresh machines |
+
+## Runtime Safety Rules
+
+- If code uses `tcsetpgrp`/terminal foreground handoff, handle `SIGTTOU` when reclaiming the parent foreground process group.
+- Treat the highest Python version in CI as the compatibility ceiling (currently Python 3.13), and validate behavior there for runtime-sensitive changes.
+- Certificate generation for TLS tests/runtime must include SKI/AKI extensions for Python 3.13 compatibility.
+- For certificate/proxy/security-sensitive changes, validate tests on Python 3.13 locally when available (CI also enforces this).
 
 ## Worktree Workflow
 
