@@ -34,7 +34,12 @@ if hasattr(sys.stdout, "reconfigure"):
 
 log = logging.getLogger("claude-tap")
 
-__version__ = "0.1.7"
+try:
+    from importlib.metadata import version as _pkg_version
+
+    __version__ = _pkg_version("claude-tap")
+except Exception:
+    __version__ = "0.0.0"
 
 
 def _open_browser(url: str) -> None:
