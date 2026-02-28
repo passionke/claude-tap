@@ -394,7 +394,15 @@ def _start_fake_upstream(port, handler_fn):
     return stop
 
 
-def _run_claude_tap(project_dir, trace_dir, fake_bin_dir, upstream_port, timeout=30, tap_client="claude"):
+def _run_claude_tap(
+    project_dir,
+    trace_dir,
+    fake_bin_dir,
+    upstream_port,
+    timeout=30,
+    tap_client="claude",
+    client_args: list[str] | None = None,
+):
     """Run claude_tap as a subprocess pointing at `upstream_port`.
     Returns the CompletedProcess."""
     env = os.environ.copy()
@@ -411,6 +419,8 @@ def _run_claude_tap(project_dir, trace_dir, fake_bin_dir, upstream_port, timeout
     ]
     if tap_client != "claude":
         cmd.extend(["--tap-client", tap_client])
+    if client_args:
+        cmd.extend(client_args)
 
     return subprocess.run(
         cmd,
@@ -1161,7 +1171,7 @@ def test_parse_args():
     # Codex defaults
     a = parse_args(["--tap-client", "codex"])
     assert a.client == "codex"
-    assert a.target == "https://api.openai.com"
+    assert a.target == "https://chatgpt.com/backend-api/codex"
     assert a.claude_args == []
     print("  OK: codex defaults")
 
@@ -1214,7 +1224,7 @@ FAKE_CODEX_SCRIPT = r"""#!/usr/bin/env python3
 import json, os, sys, urllib.request
 
 base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
-url = f"{base}/messages"
+url = f"{base}/responses"
 
 req_body = json.dumps({
     "model": "gpt-5-codex",
@@ -1237,11 +1247,16 @@ print("[fake-codex] Done.")
 
 
 def test_codex_client_reverse_proxy():
-    """Test --tap-client codex in reverse mode using OPENAI_BASE_URL."""
+    """Test --tap-client codex in reverse mode using OPENAI_BASE_URL.
+
+    The proxy must strip the /v1 prefix from the request path before forwarding
+    to the upstream, so the fake upstream sees /responses instead of /v1/responses.
+    """
 
     async def handler(request):
         body = await request.json()
-        assert request.path == "/v1/messages"
+        # Proxy strips /v1 prefix: /v1/responses -> /responses
+        assert request.path == "/responses", f"expected /responses, got {request.path}"
         from aiohttp import web
 
         return web.json_response(
@@ -1275,10 +1290,126 @@ def test_codex_client_reverse_proxy():
         records = [json.loads(line) for line in trace_files[0].read_text().splitlines() if line.strip()]
         assert len(records) == 1
         record = records[0]
-        assert record["request"]["path"] == "/v1/messages"
+        # Trace records the original path as received from the client
+        assert record["request"]["path"] == "/v1/responses"
         assert record["upstream_base_url"] == "http://127.0.0.1:19242"
         assert record["request"]["body"]["model"] == "gpt-5-codex"
         assert "OPENAI_BASE_URL=http://127.0.0.1:" in proc.stdout
+        assert "--disable responses_websockets_v2 --disable responses_websockets" in proc.stdout
+    finally:
+        stop()
+        _cleanup(trace_dir, fake_bin_dir, "codex")
+
+
+def test_codex_reverse_mode_respects_websocket_feature_override():
+    """If user explicitly enables websocket Responses, don't auto-disable it."""
+
+    async def handler(request):
+        body = await request.json()
+        from aiohttp import web
+
+        return web.json_response(
+            {
+                "id": "resp_codex_override_1",
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": "OK"}]}],
+                "usage": {"input_tokens": 3, "output_tokens": 1},
+                "model": body.get("model", "gpt-5-codex"),
+            }
+        )
+
+    trace_dir = tempfile.mkdtemp(prefix="claude_tap_test_codex_override_")
+    fake_bin_dir = tempfile.mkdtemp(prefix="fake_bin_codex_override_")
+    fake_codex = Path(fake_bin_dir) / "codex"
+    fake_codex.write_text(FAKE_CODEX_SCRIPT)
+    fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IEXEC)
+    stop = _start_fake_upstream(19244, handler)
+
+    try:
+        proc = _run_claude_tap(
+            Path(__file__).parent,
+            trace_dir,
+            fake_bin_dir,
+            19244,
+            tap_client="codex",
+            client_args=["--enable", "responses_websockets"],
+        )
+
+        assert proc.returncode == 0, f"codex mode failed: stdout={proc.stdout} stderr={proc.stderr}"
+        assert "--enable responses_websockets" in proc.stdout
+        assert "--disable responses_websockets " not in proc.stdout
+        assert "--disable responses_websockets_v2" in proc.stdout
+    finally:
+        stop()
+        _cleanup(trace_dir, fake_bin_dir, "codex")
+
+
+## ---------------------------------------------------------------------------
+## Test 6b: test_codex_zstd_request_body — proxy decompresses zstd request bodies
+## ---------------------------------------------------------------------------
+
+
+def test_codex_zstd_request_body():
+    """Verify the proxy decompresses zstd-encoded request bodies from Codex CLI."""
+    received_bodies: list[dict] = []
+
+    async def handler(request):
+        body = await request.json()
+        received_bodies.append(body)
+        # Content-Encoding: zstd should have been stripped by the proxy
+        assert "zstd" not in request.headers.get("Content-Encoding", "").lower()
+        from aiohttp import web
+
+        return web.json_response(
+            {
+                "id": "resp_zstd_1",
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": "OK"}]}],
+                "usage": {"input_tokens": 5, "output_tokens": 2},
+                "model": "gpt-5-codex",
+            }
+        )
+
+    # Build a fake codex script that sends a zstd-compressed body
+    zstd_codex_script = r"""#!/usr/bin/env python3
+import json, os, sys, urllib.request
+import backports.zstd
+
+base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+url = f"{base}/responses"
+payload = json.dumps({"model": "gpt-5-codex", "input": "zstd test"}).encode()
+compressed = backports.zstd.compress(payload)
+
+req = urllib.request.Request(url, data=compressed, headers={
+    "Content-Type": "application/json",
+    "Content-Encoding": "zstd",
+    "Authorization": "Bearer sk-test",
+})
+try:
+    with urllib.request.urlopen(req) as resp:
+        print(f"[fake-codex] status={resp.status}")
+except Exception as e:
+    print(f"[fake-codex] Error: {e}", file=sys.stderr)
+    sys.exit(1)
+"""
+
+    trace_dir = tempfile.mkdtemp(prefix="claude_tap_test_zstd_")
+    fake_bin_dir = tempfile.mkdtemp(prefix="fake_bin_zstd_")
+    fake_codex = Path(fake_bin_dir) / "codex"
+    fake_codex.write_text(zstd_codex_script)
+    fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IEXEC)
+    stop = _start_fake_upstream(19243, handler)
+
+    try:
+        proc = _run_claude_tap(
+            Path(__file__).parent,
+            trace_dir,
+            fake_bin_dir,
+            19243,
+            tap_client="codex",
+        )
+
+        assert proc.returncode == 0, f"zstd test failed: stdout={proc.stdout} stderr={proc.stderr}"
+        assert len(received_bodies) == 1
+        assert received_bodies[0]["input"] == "zstd test"
     finally:
         stop()
         _cleanup(trace_dir, fake_bin_dir, "codex")
