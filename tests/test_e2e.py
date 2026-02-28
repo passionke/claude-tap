@@ -231,6 +231,7 @@ def _run_test():
                 "claude_tap",
                 "--tap-output-dir",
                 trace_dir,
+                "--tap-no-open",
                 "--tap-target",
                 f"http://127.0.0.1:{FAKE_UPSTREAM_PORT}",
             ],
@@ -414,6 +415,7 @@ def _run_claude_tap(
         "claude_tap",
         "--tap-output-dir",
         trace_dir,
+        "--tap-no-open",
         "--tap-target",
         f"http://127.0.0.1:{upstream_port}",
     ]
@@ -1191,7 +1193,7 @@ def test_parse_args():
     print("  OK: -p forwarded (no conflict with old --port)")
 
     # Tap-specific flags consumed
-    a = parse_args(["--tap-port", "8080", "--tap-output-dir", "/tmp/t", "--tap-target", "http://x"])
+    a = parse_args(["--tap-port", "8080", "--tap-output-dir", "/tmp/t", "--tap-no-open", "--tap-target", "http://x"])
     assert a.port == 8080
     assert a.output_dir == "/tmp/t"
     assert a.target == "http://x"
@@ -1416,10 +1418,8 @@ except Exception as e:
 
 
 ## ---------------------------------------------------------------------------
-## Test 7: test_filter_headers — header redaction and hop-by-hop filtering
+## Test 6b: test_codex_zstd_request_body — proxy decompresses zstd request bodies
 ## ---------------------------------------------------------------------------
-
-
 def test_filter_headers():
     """Test filter_headers strips hop-by-hop headers and optionally redacts secrets."""
     from claude_tap import filter_headers
@@ -1582,6 +1582,7 @@ def test_upstream_unreachable():
                 "claude_tap",
                 "--tap-output-dir",
                 trace_dir,
+                "--tap-no-open",
                 "--tap-target",
                 f"http://127.0.0.1:{FAKE_UPSTREAM_UNREACHABLE_PORT}",
             ],
@@ -1695,6 +1696,7 @@ def test_version_check_with_fake_pypi():
                 "claude_tap",
                 "--tap-output-dir",
                 trace_dir,
+                "--tap-no-open",
                 "--tap-target",
                 f"http://127.0.0.1:{FAKE_UPSTREAM_PORT}",
                 "--tap-no-auto-update",
@@ -1756,6 +1758,7 @@ def test_version_check_no_update():
                 "claude_tap",
                 "--tap-output-dir",
                 trace_dir,
+                "--tap-no-open",
                 "--tap-target",
                 f"http://127.0.0.1:{FAKE_UPSTREAM_PORT}",
             ],
@@ -1924,6 +1927,7 @@ def test_e2e_with_cleanup():
                 "claude_tap",
                 "--tap-output-dir",
                 trace_dir,
+                "--tap-no-open",
                 "--tap-target",
                 f"http://127.0.0.1:{FAKE_UPSTREAM_PORT}",
                 "--tap-max-traces",
