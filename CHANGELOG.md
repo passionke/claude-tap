@@ -12,6 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+## [0.0.1] - 2026-05-07
+
+### Added
+- Surface `claw_session_id` directly in viewer sidebar rows and in the detail header.
+
+### Changed
+- Support `release-vx.y.z` tags in publish workflow triggers and changelog validation.
+
 ## [0.1.46] - 2026-05-06
 
 ### Changed
