@@ -12,7 +12,7 @@ from aiohttp import web
 from yarl import URL
 
 from claude_tap.proxy import _build_ws_record, _get_ws_proxy_settings, proxy_handler
-from claude_tap.trace import TraceWriter
+from claude_tap.session_dispatcher import SessionTraceDispatcher
 
 
 @pytest.fixture
@@ -34,15 +34,16 @@ async def _start_ws_upstream(handler) -> tuple[web.AppRunner, int]:
     return runner, port
 
 
-async def _start_proxy(target_url, writer, strip_prefix="") -> tuple[web.AppRunner, int, aiohttp.ClientSession]:
+async def _start_proxy(
+    target_url, trace_dispatcher: SessionTraceDispatcher, strip_prefix=""
+) -> tuple[web.AppRunner, int, aiohttp.ClientSession]:
     """Start the reverse proxy, return (runner, port, session)."""
     session = aiohttp.ClientSession(auto_decompress=False, trust_env=True)
     app = web.Application(client_max_size=0)
     app["trace_ctx"] = {
         "target_url": target_url,
-        "writer": writer,
+        "trace_dispatcher": trace_dispatcher,
         "session": session,
-        "turn_counter": 0,
         "strip_path_prefix": strip_prefix,
     }
     app.router.add_route("*", "/{path_info:.*}", proxy_handler)
@@ -99,13 +100,14 @@ async def test_websocket_proxy_basic(trace_dir):
                 break
         return ws
 
-    trace_path = Path(trace_dir) / "trace_ws.jsonl"
-    writer = TraceWriter(trace_path)
+    dd = Path(trace_dir) / "2099-06-01"
+    dd.mkdir(parents=True)
+    dispatcher = SessionTraceDispatcher(dd, "120001", live_server=None)
 
     upstream_runner, upstream_port = await _start_ws_upstream(ws_upstream_handler)
     proxy_runner, proxy_port, proxy_session = await _start_proxy(
         f"http://127.0.0.1:{upstream_port}",
-        writer,
+        dispatcher,
         strip_prefix="/v1",
     )
 
@@ -136,11 +138,14 @@ async def test_websocket_proxy_basic(trace_dir):
 
         # Allow trace writer to flush
         await asyncio.sleep(0.1)
-        writer.close()
+        dispatcher.close()
 
-        records = [json.loads(line) for line in trace_path.read_text().splitlines() if line.strip()]
+        paths = sorted(dd.glob("trace_*.jsonl"))
+        assert len(paths) == 1
+        records = [json.loads(line) for line in paths[0].read_text().splitlines() if line.strip()]
         assert len(records) == 1
         r = records[0]
+        assert r["claw_session_id"] == "_anonymous"
         assert r["transport"] == "websocket"
         assert r["request"]["method"] == "WEBSOCKET"
         assert r["request"]["path"] == "/v1/responses"
@@ -177,13 +182,14 @@ async def test_websocket_upstream_connect_does_not_override_proxy(trace_dir):
                 break
         return ws
 
-    trace_path = Path(trace_dir) / "trace_ws_proxy_args.jsonl"
-    writer = TraceWriter(trace_path)
+    dd = Path(trace_dir) / "2099-06-02"
+    dd.mkdir(parents=True)
+    dispatcher = SessionTraceDispatcher(dd, "120002", live_server=None)
 
     upstream_runner, upstream_port = await _start_ws_upstream(ws_upstream_handler)
     proxy_runner, proxy_port, proxy_session = await _start_proxy(
         f"http://127.0.0.1:{upstream_port}",
-        writer,
+        dispatcher,
         strip_prefix="/v1",
     )
 
@@ -222,13 +228,14 @@ async def test_websocket_upstream_connect_does_not_override_proxy(trace_dir):
 async def test_websocket_upstream_failure(trace_dir):
     """When upstream WS connect fails, return HTTP 502 and record the error."""
 
-    trace_path = Path(trace_dir) / "trace_ws_fail.jsonl"
-    writer = TraceWriter(trace_path)
+    dd = Path(trace_dir) / "2099-06-03"
+    dd.mkdir(parents=True)
+    dispatcher = SessionTraceDispatcher(dd, "120003", live_server=None)
 
     # Point proxy at a port where nothing is listening
     proxy_runner, proxy_port, proxy_session = await _start_proxy(
         "http://127.0.0.1:19999",
-        writer,
+        dispatcher,
         strip_prefix="/v1",
     )
 
@@ -240,9 +247,10 @@ async def test_websocket_upstream_failure(trace_dir):
             assert exc_info.value.status == 502
 
         await asyncio.sleep(0.1)
-        writer.close()
+        dispatcher.close()
 
-        records = [json.loads(line) for line in trace_path.read_text().splitlines() if line.strip()]
+        paths = sorted(dd.glob("trace_*.jsonl"))
+        records = [json.loads(line) for line in paths[0].read_text().splitlines() if line.strip()]
         assert len(records) == 1
         r = records[0]
         assert r["transport"] == "websocket"
@@ -373,13 +381,14 @@ async def test_websocket_and_http_coexist(trace_dir):
                 }
             )
 
-    trace_path = Path(trace_dir) / "trace_mixed.jsonl"
-    writer = TraceWriter(trace_path)
+    dd = Path(trace_dir) / "2099-06-04"
+    dd.mkdir(parents=True)
+    dispatcher = SessionTraceDispatcher(dd, "120004", live_server=None)
 
     upstream_runner, upstream_port = await _start_ws_upstream(mixed_handler)
     proxy_runner, proxy_port, proxy_session = await _start_proxy(
         f"http://127.0.0.1:{upstream_port}",
-        writer,
+        dispatcher,
     )
 
     try:
@@ -402,9 +411,11 @@ async def test_websocket_and_http_coexist(trace_dir):
             await ws.close()
 
         await asyncio.sleep(0.1)
-        writer.close()
+        dispatcher.close()
 
-        records = [json.loads(line) for line in trace_path.read_text().splitlines() if line.strip()]
+        paths = sorted(dd.glob("trace_*.jsonl"))
+        assert len(paths) == 1
+        records = [json.loads(line) for line in paths[0].read_text().splitlines() if line.strip()]
         assert len(records) == 2
 
         http_rec = next(r for r in records if r.get("transport") != "websocket")

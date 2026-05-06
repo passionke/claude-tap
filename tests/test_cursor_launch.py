@@ -9,7 +9,7 @@ import pytest
 from claude_tap import parse_args
 from claude_tap.cli import CLIENT_CONFIGS, run_client
 from claude_tap.cursor_transcript import import_cursor_transcripts
-from claude_tap.trace import TraceWriter
+from claude_tap.session_dispatcher import SessionTraceDispatcher
 
 
 class _DummyProc:
@@ -101,12 +101,17 @@ async def test_import_cursor_transcripts_appends_viewer_friendly_records(tmp_pat
     ]
     transcript.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
 
-    writer = TraceWriter(tmp_path / "trace.jsonl")
-    imported = await import_cursor_transcripts(writer, since=0, home=tmp_path)
-    writer.close()
+    date_dir = tmp_path / "2099-01-01"
+    date_dir.mkdir()
+    dispatcher = SessionTraceDispatcher(date_dir, "120000", live_server=None)
+    imported = await import_cursor_transcripts(dispatcher, since=0, home=tmp_path)
+    dispatcher.close()
 
     assert imported == 2
-    records = [json.loads(line) for line in (tmp_path / "trace.jsonl").read_text().splitlines()]
+    paths = sorted(date_dir.glob("trace_*.jsonl"))
+    assert len(paths) == 1
+    records = [json.loads(line) for line in paths[0].read_text().splitlines()]
+    assert records[0]["claw_session_id"] == "cursor:session-123"
     assert records[0]["transport"] == "cursor-transcript"
     assert records[0]["request"]["body"]["messages"][0]["content"] == "hello cursor"
     assert records[0]["response"]["body"]["content"][0]["text"] == "hello back"
@@ -146,12 +151,17 @@ async def test_import_cursor_transcripts_preserves_tool_uses(tmp_path: Path) -> 
     ]
     transcript.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
 
-    writer = TraceWriter(tmp_path / "trace.jsonl")
-    imported = await import_cursor_transcripts(writer, since=0, home=tmp_path)
-    writer.close()
+    date_dir = tmp_path / "2099-01-02"
+    date_dir.mkdir()
+    dispatcher = SessionTraceDispatcher(date_dir, "120000", live_server=None)
+    imported = await import_cursor_transcripts(dispatcher, since=0, home=tmp_path)
+    dispatcher.close()
 
     assert imported == 3
-    records = [json.loads(line) for line in (tmp_path / "trace.jsonl").read_text().splitlines()]
+    paths = sorted(date_dir.glob("trace_*.jsonl"))
+    assert len(paths) == 1
+    records = [json.loads(line) for line in paths[0].read_text().splitlines()]
+    assert records[0]["claw_session_id"] == "cursor:tool-session"
 
     assert records[0]["request"]["path"].endswith("/turn/1/step/1")
     assert records[1]["request"]["path"].endswith("/turn/1/step/2")

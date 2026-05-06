@@ -1,0 +1,13 @@
+.git
+.traces
+.pytest_cache
+.ruff_cache
+__pycache__
+*.pyc
+.venv
+venv
+dist
+build
+*.egg-info
+terminals
+.cursor

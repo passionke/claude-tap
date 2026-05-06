@@ -16,8 +16,9 @@ from aiohttp import web
 from aiohttp.helpers import get_env_proxy_for_url
 from yarl import URL
 
+from claude_tap.claw_session import extract_claw_session_id, strip_claw_session_header
+from claude_tap.session_dispatcher import SessionTraceDispatcher
 from claude_tap.sse import SSEReassembler
-from claude_tap.trace import TraceWriter
 
 log = logging.getLogger("claude-tap")
 
@@ -104,7 +105,7 @@ async def proxy_handler(request: web.Request) -> web.StreamResponse:
 
     ctx: dict = request.app["trace_ctx"]
     target: str = ctx["target_url"]
-    writer: TraceWriter = ctx["writer"]
+    trace_dispatcher: SessionTraceDispatcher = ctx["trace_dispatcher"]
     session: aiohttp.ClientSession = ctx["session"]
 
     # Strip path prefix (e.g. /v1) for codex client so that
@@ -119,7 +120,9 @@ async def proxy_handler(request: web.Request) -> web.StreamResponse:
     # request.read() returns plain bytes even when Content-Encoding is set.
     body = await request.read()
 
+    raw_claw = extract_claw_session_id(request.headers)
     fwd_headers = filter_headers(request.headers)
+    strip_claw_session_header(fwd_headers)
     fwd_headers.pop("Host", None)
     # Strip Content-Encoding since aiohttp already decompressed the body;
     # also remove stale Content-Length (aiohttp client will recompute it).
@@ -142,8 +145,7 @@ async def proxy_handler(request: web.Request) -> web.StreamResponse:
     if isinstance(req_body, dict):
         is_streaming = req_body.get("stream", False)
 
-    ctx["turn_counter"] = ctx.get("turn_counter", 0) + 1
-    turn = ctx["turn_counter"]
+    turn = await trace_dispatcher.alloc_turn(raw_claw)
 
     model = req_body.get("model", "") if isinstance(req_body, dict) else ""
     log_prefix = f"[Turn {turn}]"
@@ -178,7 +180,8 @@ async def proxy_handler(request: web.Request) -> web.StreamResponse:
             turn,
             t0,
             req_body,
-            writer,
+            trace_dispatcher,
+            raw_claw,
             log_prefix,
             upstream_base_url=target,
         )
@@ -191,7 +194,8 @@ async def proxy_handler(request: web.Request) -> web.StreamResponse:
         turn,
         t0,
         req_body,
-        writer,
+        trace_dispatcher,
+        raw_claw,
         log_prefix,
         upstream_base_url=target,
     )
@@ -204,7 +208,8 @@ async def _handle_streaming(
     turn: int,
     t0: float,
     req_body,
-    writer: TraceWriter,
+    trace_dispatcher: SessionTraceDispatcher,
+    raw_claw_session_id: str,
     log_prefix: str,
     upstream_base_url: str,
 ) -> web.StreamResponse:
@@ -255,7 +260,7 @@ async def _handle_streaming(
         sse_events=reassembler.events,
         upstream_base_url=upstream_base_url,
     )
-    await writer.write(record)
+    await trace_dispatcher.write(raw_claw_session_id, record)
 
     return resp
 
@@ -267,7 +272,8 @@ async def _handle_non_streaming(
     turn: int,
     t0: float,
     req_body,
-    writer: TraceWriter,
+    trace_dispatcher: SessionTraceDispatcher,
+    raw_claw_session_id: str,
     log_prefix: str,
     upstream_base_url: str,
 ) -> web.Response:
@@ -306,7 +312,7 @@ async def _handle_non_streaming(
         resp_body,
         upstream_base_url=upstream_base_url,
     )
-    await writer.write(record)
+    await trace_dispatcher.write(raw_claw_session_id, record)
 
     return web.Response(
         status=upstream_resp.status,
@@ -396,7 +402,7 @@ async def _handle_websocket(request: web.Request) -> web.StreamResponse:
     """Proxy a WebSocket connection to the upstream, recording all messages."""
     ctx: dict = request.app["trace_ctx"]
     target: str = ctx["target_url"]
-    writer: TraceWriter = ctx["writer"]
+    trace_dispatcher: SessionTraceDispatcher = ctx["trace_dispatcher"]
     session: aiohttp.ClientSession = ctx["session"]
 
     strip_prefix: str = ctx.get("strip_path_prefix", "")
@@ -413,8 +419,10 @@ async def _handle_websocket(request: web.Request) -> web.StreamResponse:
     else:
         upstream_ws_url = upstream_url
 
+    raw_claw = extract_claw_session_id(request.headers)
     # Forward auth headers, strip hop-by-hop and WS handshake headers
     fwd_headers = filter_headers(request.headers)
+    strip_claw_session_header(fwd_headers)
     fwd_headers.pop("Host", None)
     for h in list(fwd_headers.keys()):
         if h.lower() in _WS_HANDSHAKE_HEADERS:
@@ -428,8 +436,7 @@ async def _handle_websocket(request: web.Request) -> web.StreamResponse:
 
     req_id = f"req_{uuid.uuid4().hex[:12]}"
     t0 = time.monotonic()
-    ctx["turn_counter"] = ctx.get("turn_counter", 0) + 1
-    turn = ctx["turn_counter"]
+    turn = await trace_dispatcher.alloc_turn(raw_claw)
     log_prefix = f"[Turn {turn}]"
 
     # Resolve proxy from env — aiohttp ws_connect ignores trust_env
@@ -466,7 +473,7 @@ async def _handle_websocket(request: web.Request) -> web.StreamResponse:
             upstream_base_url=target,
             error=str(exc),
         )
-        await writer.write(record)
+        await trace_dispatcher.write(raw_claw, record)
         return web.Response(status=502, text=str(exc))
 
     # Upstream connected — accept client WebSocket upgrade
@@ -544,7 +551,7 @@ async def _handle_websocket(request: web.Request) -> web.StreamResponse:
         server_messages=server_messages,
         upstream_base_url=target,
     )
-    await writer.write(record)
+    await trace_dispatcher.write(raw_claw, record)
 
     log.info(
         f"{log_prefix} ← WS closed ({duration_ms}ms, "

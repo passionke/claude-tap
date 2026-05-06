@@ -1802,12 +1802,34 @@ let viewingDate = null; // null = live, string = historical date
 let liveRenderTimer = null;
 const liveSeenIds = new Set();
 
+function getLiveSessionFilter() {
+  try {
+    const p = new URLSearchParams(window.location.search);
+    const s = p.get('session') || p.get('claw_session_id') || '';
+    return String(s).trim();
+  } catch (e) {
+    return '';
+  }
+}
+
+function liveEventsUrl() {
+  const s = getLiveSessionFilter();
+  return s ? '/events?' + new URLSearchParams({ session: s }).toString() : '/events';
+}
+
+function tracesApiUrl(dateValue) {
+  let url = '/api/traces/' + encodeURIComponent(dateValue);
+  const s = getLiveSessionFilter();
+  if (s) url += '?' + new URLSearchParams({ session: s }).toString();
+  return url;
+}
+
 function initLiveMode() {
   const statusEl = $('#live-status');
   statusEl.style.display = 'flex';
   updateLiveStatus('connecting');
 
-  liveEventSource = new EventSource('/events');
+  liveEventSource = new EventSource(liveEventsUrl());
 
   liveEventSource.onopen = () => {
     liveConnected = true;
@@ -1887,7 +1909,7 @@ async function onDateChange(value) {
   }
   viewingDate = value;
   try {
-    const resp = await fetch('/api/traces/' + encodeURIComponent(value));
+    const resp = await fetch(tracesApiUrl(value));
     entries = expandWebSocketResponseEntries(await resp.json());
     renderApp();
   } catch (e) {

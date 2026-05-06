@@ -32,6 +32,7 @@ from aiohttp._websocket.reader import WebSocketDataQueue, WebSocketReader
 from aiohttp.http_websocket import WS_KEY, WebSocketWriter
 
 from claude_tap.certs import CertificateAuthority
+from claude_tap.claw_session import extract_claw_session_id, strip_claw_session_header
 from claude_tap.proxy import (
     HOP_BY_HOP,
     _build_record,
@@ -40,8 +41,8 @@ from claude_tap.proxy import (
     reconstruct_ws_request_body,
     reconstruct_ws_response_body,
 )
+from claude_tap.session_dispatcher import SessionTraceDispatcher
 from claude_tap.sse import SSEReassembler
-from claude_tap.trace import TraceWriter
 
 log = logging.getLogger("claude-tap")
 
@@ -84,18 +85,17 @@ class ForwardProxyServer:
         host: str,
         port: int,
         ca: CertificateAuthority,
-        writer: TraceWriter,
+        trace_dispatcher: SessionTraceDispatcher,
         session: aiohttp.ClientSession,
     ) -> None:
         self.host = host
         self.port = port
         self._ca = ca
-        self._writer = writer
+        self._dispatcher = trace_dispatcher
         self._session = session
         self._server: asyncio.Server | None = None
         self._client_tasks: set[asyncio.Task] = set()
         self._client_writers: set[asyncio.StreamWriter] = set()
-        self._turn_counter = 0
         self.actual_port: int = port
 
     async def start(self) -> int:
@@ -346,8 +346,8 @@ class ForwardProxyServer:
         client_writer: asyncio.StreamWriter,
     ) -> None:
         """Forward request to upstream, record trace, send response back."""
-        self._turn_counter += 1
-        turn = self._turn_counter
+        raw_claw = extract_claw_session_id(headers)
+        turn = await self._dispatcher.alloc_turn(raw_claw)
         req_id = f"req_{uuid.uuid4().hex[:12]}"
         t0 = time.monotonic()
         log_prefix = f"[Turn {turn}]"
@@ -367,6 +367,7 @@ class ForwardProxyServer:
 
         # Prepare forwarding headers
         fwd_headers = filter_headers(headers)
+        strip_claw_session_header(fwd_headers)
         fwd_headers.pop("Host", None)
         fwd_headers.pop("host", None)
         # Request identity encoding from upstream to avoid client-side zstd decode issues
@@ -401,6 +402,7 @@ class ForwardProxyServer:
                 path,
                 headers,
                 req_body,
+                raw_claw,
                 log_prefix,
             )
         else:
@@ -414,6 +416,7 @@ class ForwardProxyServer:
                 path,
                 headers,
                 req_body,
+                raw_claw,
                 log_prefix,
             )
 
@@ -428,6 +431,7 @@ class ForwardProxyServer:
         path: str,
         req_headers: dict[str, str],
         req_body: dict | None,
+        raw_claw_session_id: str,
         log_prefix: str,
     ) -> None:
         """Handle a streaming response: forward chunks while recording SSE."""
@@ -488,7 +492,7 @@ class ForwardProxyServer:
             reconstructed,
             sse_events=reassembler.events,
         )
-        await self._writer.write(record)
+        await self._dispatcher.write(raw_claw_session_id, record)
 
     async def _handle_non_streaming(
         self,
@@ -501,6 +505,7 @@ class ForwardProxyServer:
         path: str,
         req_headers: dict[str, str],
         req_body: dict | None,
+        raw_claw_session_id: str,
         log_prefix: str,
     ) -> None:
         """Handle a non-streaming response."""
@@ -538,7 +543,7 @@ class ForwardProxyServer:
             dict(upstream_resp.headers),
             resp_body,
         )
-        await self._writer.write(record)
+        await self._dispatcher.write(raw_claw_session_id, record)
 
         # Send response to client
         status_line = f"HTTP/1.1 {upstream_resp.status} {upstream_resp.reason}\r\n"
@@ -562,8 +567,8 @@ class ForwardProxyServer:
         writer: asyncio.StreamWriter,
     ) -> None:
         """Relay a WebSocket upgrade received inside the CONNECT tunnel."""
-        self._turn_counter += 1
-        turn = self._turn_counter
+        raw_claw = extract_claw_session_id(headers)
+        turn = await self._dispatcher.alloc_turn(raw_claw)
         req_id = f"req_{uuid.uuid4().hex[:12]}"
         t0 = time.monotonic()
         log_prefix = f"[Turn {turn}]"
@@ -571,6 +576,7 @@ class ForwardProxyServer:
         upstream_ws_url = f"wss://{hostname}:{port}{path}"
 
         fwd_headers = filter_headers(headers)
+        strip_claw_session_header(fwd_headers)
         fwd_headers.pop("Host", None)
         fwd_headers.pop("host", None)
         for h in list(fwd_headers.keys()):
@@ -626,7 +632,7 @@ class ForwardProxyServer:
                 "response": {"status": 502, "headers": {}, "body": None, "error": str(exc)},
                 "upstream_base_url": upstream_base_url,
             }
-            await self._writer.write(record)
+            await self._dispatcher.write(raw_claw, record)
             return
 
         sec_key = headers.get("Sec-WebSocket-Key") or headers.get("sec-websocket-key")
@@ -756,7 +762,7 @@ class ForwardProxyServer:
             "upstream_base_url": upstream_base_url,
         }
         record["response"]["body"] = reconstruct_ws_response_body(record["response"]["ws_events"])
-        await self._writer.write(record)
+        await self._dispatcher.write(raw_claw, record)
         log.info(
             f"{log_prefix} <- WS closed ({duration_ms}ms, "
             f"{len(client_messages)} client→upstream, {len(server_messages)} upstream→client)"

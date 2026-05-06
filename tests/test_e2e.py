@@ -2244,11 +2244,12 @@ async def test_forward_proxy_connect():
 
     from claude_tap.certs import CertificateAuthority, ensure_ca
     from claude_tap.forward_proxy import ForwardProxyServer
-    from claude_tap.trace import TraceWriter
+    from claude_tap.session_dispatcher import SessionTraceDispatcher
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
-        trace_path = tmpdir / "trace.jsonl"
+        date_dir = tmpdir / "2099-05-01"
+        date_dir.mkdir()
         ca_dir = tmpdir / "ca"
 
         # Generate CA
@@ -2261,7 +2262,7 @@ async def test_forward_proxy_connect():
 
         # Start forward proxy (disable SSL verify for the upstream session
         # since our fake upstream uses a self-signed cert)
-        writer = TraceWriter(trace_path)
+        trace_dispatcher = SessionTraceDispatcher(date_dir, "120000", live_server=None)
         upstream_ssl_ctx = ssl.create_default_context()
         upstream_ssl_ctx.check_hostname = False
         upstream_ssl_ctx.verify_mode = ssl.CERT_NONE
@@ -2272,7 +2273,7 @@ async def test_forward_proxy_connect():
             host="127.0.0.1",
             port=0,
             ca=ca,
-            writer=writer,
+            trace_dispatcher=trace_dispatcher,
             session=session,
         )
         proxy_port = await server.start()
@@ -2312,9 +2313,10 @@ async def test_forward_proxy_connect():
             await asyncio.sleep(0.1)
 
             # Check trace was recorded
-            writer.close()
-            trace_text = trace_path.read_text().strip()
-            assert trace_text, "No trace recorded"
+            trace_dispatcher.close()
+            trace_paths = sorted(date_dir.glob("trace_*.jsonl"))
+            assert trace_paths, "No trace recorded"
+            trace_text = trace_paths[0].read_text().strip()
             records = [json.loads(line) for line in trace_text.splitlines()]
             assert len(records) == 1
             assert records[0]["request"]["method"] == "POST"
@@ -2344,11 +2346,12 @@ async def test_forward_proxy_connect_websocket():
 
     from claude_tap.certs import CertificateAuthority, ensure_ca
     from claude_tap.forward_proxy import ForwardProxyServer
-    from claude_tap.trace import TraceWriter
+    from claude_tap.session_dispatcher import SessionTraceDispatcher
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
-        trace_path = tmpdir / "trace_ws.jsonl"
+        date_dir = tmpdir / "2099-05-02"
+        date_dir.mkdir()
         ca_dir = tmpdir / "ca"
 
         ca_cert_path, ca_key_path = ensure_ca(ca_dir)
@@ -2357,7 +2360,7 @@ async def test_forward_proxy_connect_websocket():
         upstream_port = await _start_fake_wss_upstream(tmpdir)
         print(f"  Fake WSS upstream on port {upstream_port}")
 
-        writer = TraceWriter(trace_path)
+        trace_dispatcher = SessionTraceDispatcher(date_dir, "120000", live_server=None)
         upstream_ssl_ctx = ssl.create_default_context()
         upstream_ssl_ctx.check_hostname = False
         upstream_ssl_ctx.verify_mode = ssl.CERT_NONE
@@ -2368,7 +2371,7 @@ async def test_forward_proxy_connect_websocket():
             host="127.0.0.1",
             port=0,
             ca=ca,
-            writer=writer,
+            trace_dispatcher=trace_dispatcher,
             session=session,
         )
         proxy_port = await server.start()
@@ -2406,9 +2409,10 @@ async def test_forward_proxy_connect_websocket():
             print("  OK: CONNECT + WSS upgrade works")
 
             await asyncio.sleep(0.1)
-            writer.close()
+            trace_dispatcher.close()
 
-            trace_text = trace_path.read_text().strip()
+            trace_paths = sorted(date_dir.glob("trace_*.jsonl"))
+            trace_text = trace_paths[0].read_text().strip()
             assert trace_text, "No WS trace recorded"
             records = [json.loads(line) for line in trace_text.splitlines()]
             assert len(records) == 1
@@ -2435,18 +2439,19 @@ async def test_forward_proxy_connect_websocket_honors_env_proxy(monkeypatch):
 
     from claude_tap.certs import CertificateAuthority, ensure_ca
     from claude_tap.forward_proxy import ForwardProxyServer
-    from claude_tap.trace import TraceWriter
+    from claude_tap.session_dispatcher import SessionTraceDispatcher
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
-        trace_path = tmpdir / "trace_ws_proxy_args.jsonl"
+        date_dir = tmpdir / "2099-05-03"
+        date_dir.mkdir()
         ca_dir = tmpdir / "ca"
 
         ca_cert_path, ca_key_path = ensure_ca(ca_dir)
         ca = CertificateAuthority(ca_cert_path, ca_key_path)
 
         upstream_port = await _start_fake_wss_upstream(tmpdir)
-        writer = TraceWriter(trace_path)
+        trace_dispatcher = SessionTraceDispatcher(date_dir, "120000", live_server=None)
         upstream_ssl_ctx = ssl.create_default_context()
         upstream_ssl_ctx.check_hostname = False
         upstream_ssl_ctx.verify_mode = ssl.CERT_NONE
@@ -2473,7 +2478,7 @@ async def test_forward_proxy_connect_websocket_honors_env_proxy(monkeypatch):
             host="127.0.0.1",
             port=0,
             ca=ca,
-            writer=writer,
+            trace_dispatcher=trace_dispatcher,
             session=session,
         )
         proxy_port = await server.start()

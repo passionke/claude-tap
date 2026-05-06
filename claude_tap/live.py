@@ -21,7 +21,8 @@ class LiveViewerServer:
         self.port = port
         self.host = host
         self.output_dir = output_dir
-        self._sse_clients: list[web.StreamResponse] = []
+        # Each SSE subscriber optionally filters by ``claw_session_id`` (query: session=).
+        self._sse_clients: list[tuple[web.StreamResponse, str | None]] = []
         self._records: list[dict] = []
         self._current_date: str = date.today().isoformat()
         self._lock = asyncio.Lock()
@@ -53,7 +54,7 @@ class LiveViewerServer:
     async def stop(self) -> None:
         """Stop the viewer server."""
         self._shutdown_event.set()
-        for client in self._sse_clients:
+        for client, _ in self._sse_clients:
             try:
                 await client.write_eof()
             except Exception:
@@ -78,15 +79,17 @@ class LiveViewerServer:
         data = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
         message = f"data: {data}\n\n"
 
-        disconnected = []
-        for client in self._sse_clients:
+        disconnected: list[web.StreamResponse] = []
+        for client, sess_filter in self._sse_clients:
+            if sess_filter is not None and record.get("claw_session_id") != sess_filter:
+                continue
             try:
                 await client.write(message.encode("utf-8"))
             except (ConnectionError, ConnectionResetError, Exception):
                 disconnected.append(client)
 
-        for client in disconnected:
-            self._sse_clients.remove(client)
+        if disconnected:
+            self._sse_clients[:] = [(c, sf) for c, sf in self._sse_clients if c not in disconnected]
 
     @property
     def url(self) -> str:
@@ -117,6 +120,10 @@ class LiveViewerServer:
 
     async def _handle_sse(self, request: web.Request) -> web.StreamResponse:
         """SSE endpoint for live trace updates."""
+        qs = request.rel_url.query
+        raw_sess = qs.get("session") or qs.get("claw_session_id") or ""
+        sess_filter: str | None = raw_sess.strip() if raw_sess.strip() else None
+
         resp = web.StreamResponse(
             status=200,
             headers={
@@ -130,10 +137,12 @@ class LiveViewerServer:
 
         async with self._lock:
             for record in self._records:
+                if sess_filter is not None and record.get("claw_session_id") != sess_filter:
+                    continue
                 data = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
                 await resp.write(f"data: {data}\n\n".encode("utf-8"))
 
-        self._sse_clients.append(resp)
+        self._sse_clients.append((resp, sess_filter))
 
         try:
             while not self._shutdown_event.is_set():
@@ -150,15 +159,20 @@ class LiveViewerServer:
         except asyncio.CancelledError:
             pass
         finally:
-            if resp in self._sse_clients:
-                self._sse_clients.remove(resp)
+            self._sse_clients[:] = [(c, sf) for c, sf in self._sse_clients if c is not resp]
 
         return resp
 
     async def _handle_records(self, request: web.Request) -> web.Response:
         """Return all records as JSON array."""
+        qs = request.rel_url.query
+        raw_sess = qs.get("session") or qs.get("claw_session_id") or ""
+        sess_filter: str | None = raw_sess.strip() if raw_sess.strip() else None
         async with self._lock:
-            return web.json_response(self._records)
+            rows = self._records
+            if sess_filter is not None:
+                rows = [r for r in self._records if r.get("claw_session_id") == sess_filter]
+            return web.json_response(rows)
 
     async def _handle_dates(self, request: web.Request) -> web.Response:
         """Return available trace dates (descending)."""
@@ -195,6 +209,10 @@ class LiveViewerServer:
         if not trace_dir.is_dir():
             return web.json_response([])
 
+        qs = request.rel_url.query
+        raw_sess = qs.get("session") or qs.get("claw_session_id") or ""
+        sess_filter: str | None = raw_sess.strip() if raw_sess.strip() else None
+
         records = []
         for jsonl in sorted(trace_dir.glob(pattern)):
             try:
@@ -204,4 +222,6 @@ class LiveViewerServer:
                         records.append(json.loads(line))
             except (OSError, json.JSONDecodeError):
                 continue
+        if sess_filter is not None:
+            records = [r for r in records if r.get("claw_session_id") == sess_filter]
         return web.json_response(records)

@@ -25,6 +25,7 @@ from claude_tap.cli import (
 from claude_tap.forward_proxy import ForwardProxyServer
 from claude_tap.live import LiveViewerServer
 from claude_tap.proxy import filter_headers
+from claude_tap.session_dispatcher import SessionTraceDispatcher
 from claude_tap.sse import SSEReassembler
 from claude_tap.trace import TraceWriter
 from claude_tap.viewer import _generate_html_viewer
@@ -45,6 +46,7 @@ __all__ = [
     "CertificateAuthority",
     "ensure_ca",
     "ForwardProxyServer",
+    "SessionTraceDispatcher",
     "SSEReassembler",
     "TraceWriter",
     "LiveViewerServer",

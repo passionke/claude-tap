@@ -28,7 +28,7 @@ from claude_tap.cursor_transcript import import_cursor_transcripts
 from claude_tap.forward_proxy import ForwardProxyServer
 from claude_tap.live import LiveViewerServer
 from claude_tap.proxy import proxy_handler
-from claude_tap.trace import TraceWriter
+from claude_tap.session_dispatcher import SessionTraceDispatcher
 from claude_tap.viewer import _generate_html_viewer
 
 # Force UTF-8 + line-buffered stdout/stderr so emoji output works on Windows
@@ -337,18 +337,23 @@ async def async_main(args: argparse.Namespace):
     ts = now.strftime("%Y%m%d_%H%M%S")  # kept for manifest compatibility
     date_dir = output_dir / date_str
     date_dir.mkdir(parents=True, exist_ok=True)
-    trace_path = date_dir / f"trace_{time_str}.jsonl"
     log_path = date_dir / f"trace_{time_str}.log"
+
+    trace_dispatcher = SessionTraceDispatcher(date_dir, time_str, live_server=None)
 
     # Start live viewer server if requested
     live_server: LiveViewerServer | None = None
     if args.live_viewer:
-        live_server = LiveViewerServer(trace_path, port=args.live_port, host=args.host, output_dir=output_dir)
+        live_server = LiveViewerServer(
+            trace_dispatcher.default_primary_trace_path(),
+            port=args.live_port,
+            host=args.host,
+            output_dir=output_dir,
+        )
         await live_server.start()
+        trace_dispatcher.attach_live_server(live_server)
         print(f"🌐 Live viewer: {live_server.url}")
         _open_browser(live_server.url)
-
-    writer = TraceWriter(trace_path, live_server=live_server)
 
     # Proxy logs go to file, not terminal (avoids polluting Claude TUI)
     file_handler = logging.FileHandler(log_path, encoding="utf-8")
@@ -385,7 +390,7 @@ async def async_main(args: argparse.Namespace):
             host=args.host,
             port=args.port,
             ca=ca,
-            writer=writer,
+            trace_dispatcher=trace_dispatcher,
             session=session,
         )
         actual_port = await forward_server.start()
@@ -395,9 +400,8 @@ async def async_main(args: argparse.Namespace):
         app = web.Application(client_max_size=0)  # No body size limit (proxy must forward everything)
         app["trace_ctx"] = {
             "target_url": args.target,
-            "writer": writer,
+            "trace_dispatcher": trace_dispatcher,
             "session": session,
-            "turn_counter": 0,
             **_reverse_proxy_trace_options(args.client, args.target),
         }
         app.router.add_route("*", "/{path_info:.*}", proxy_handler)
@@ -414,7 +418,7 @@ async def async_main(args: argparse.Namespace):
             actual_port = args.port
         print(f"🔍 claude-tap v{__version__} listening on http://{args.host}:{actual_port}")
 
-    print(f"📁 Trace file: {trace_path}")
+    print(f"📁 Trace directory: {date_dir}")
 
     # Background update check
     if not args.no_update_check:
@@ -479,21 +483,28 @@ async def async_main(args: argparse.Namespace):
             pass
 
         if args.client == "cursor" and not args.no_launch:
-            imported = await import_cursor_transcripts(writer, since=client_started_at)
+            imported = await import_cursor_transcripts(trace_dispatcher, since=client_started_at)
             if imported:
                 print(f"   Cursor transcript turns: {imported}")
 
-        # Close writer before generating HTML
-        writer.close()
+        # Close trace writers before generating HTML
+        trace_dispatcher.close()
 
-        # Generate self-contained HTML viewer
-        html_path = trace_path.with_suffix(".html")
-        _generate_html_viewer(trace_path, html_path)
+        # Generate self-contained HTML viewer (one file per session JSONL)
+        session_paths = trace_dispatcher.iter_session_paths()
+        html_paths: list[Path] = []
+        for jsonl_path in session_paths:
+            html_p = jsonl_path.with_suffix(".html")
+            _generate_html_viewer(jsonl_path, html_p)
+            html_paths.append(html_p)
 
         # Register trace and cleanup old ones
-        trace_files = [_rel_posix(trace_path, output_dir), _rel_posix(log_path, output_dir)]
-        if html_path.exists():
-            trace_files.append(_rel_posix(html_path, output_dir))
+        trace_files: list[str] = [_rel_posix(log_path, output_dir)]
+        for jsonl_path in session_paths:
+            trace_files.append(_rel_posix(jsonl_path, output_dir))
+            hp = jsonl_path.with_suffix(".html")
+            if hp.exists():
+                trace_files.append(_rel_posix(hp, output_dir))
         _register_trace(output_dir, ts, trace_files)
         if args.max_traces > 0:
             cleaned = _cleanup_traces(output_dir, args.max_traces)
@@ -501,7 +512,7 @@ async def async_main(args: argparse.Namespace):
                 print(f"\n🧹 Cleaned up {cleaned} old trace(s)")
 
         # Print summary with cost estimation
-        stats = writer.get_summary()
+        stats = trace_dispatcher.get_summary()
         print("\n📊 Trace summary:")
         print(f"   API calls: {stats['api_calls']}")
 
@@ -516,14 +527,22 @@ async def async_main(args: argparse.Namespace):
             print()
 
         # Output files
-        print(f"   Trace: {trace_path}")
-        print(f"   Log:   {log_path}")
-        print(f"   View:  {html_path}")
+        if session_paths:
+            print(f"   Log: {log_path}")
+            for jp in session_paths:
+                print(f"   Trace: {jp}")
+                hv = jp.with_suffix(".html")
+                if hv.exists():
+                    print(f"   View:  {hv}")
+        else:
+            print(f"   Log: {log_path}")
+            print("   (no session traces recorded)")
 
         # Open viewer in browser (default: auto-open unless --tap-no-open)
-        if args.open_viewer and html_path.exists():
+        primary_html = html_paths[0] if html_paths else None
+        if args.open_viewer and primary_html and primary_html.exists():
             print("\n🌐 Opening viewer in browser...")
-            _open_browser(html_path.absolute().as_uri())
+            _open_browser(primary_html.absolute().as_uri())
 
     return exit_code
 

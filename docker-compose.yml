@@ -1,0 +1,24 @@
+# Local proxy + live viewer. Mount a volume so traces survive container restarts.
+# Clients: ANTHROPIC_BASE_URL=http://<host>:8080 claude
+# Live UI: http://<host>:3000/?session=<claw-session-id>
+services:
+  claude-tap:
+    build: .
+    ports:
+      - "8080:8080"
+      - "3000:3000"
+    volumes:
+      - ./traces:/data/traces
+    command:
+      - claude-tap
+      - --tap-no-launch
+      - --tap-host
+      - "0.0.0.0"
+      - --tap-port
+      - "8080"
+      - --tap-live
+      - --tap-live-port
+      - "3000"
+      - --tap-output-dir
+      - /data/traces
+    restart: unless-stopped

@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from claude_tap.trace import TraceWriter
+from claude_tap.session_dispatcher import SessionTraceDispatcher
 
 
 def _cursor_projects_dir(home: Path | None = None) -> Path:
@@ -184,7 +184,7 @@ def build_cursor_transcript_records(
 
 
 async def import_cursor_transcripts(
-    writer: TraceWriter,
+    dispatcher: SessionTraceDispatcher,
     *,
     since: float,
     home: Path | None = None,
@@ -197,10 +197,10 @@ async def import_cursor_transcripts(
     Cursor's private wire schema.
     """
     imported = 0
-    start_turn = writer.count + 1
     for transcript_path in find_cursor_transcripts(since=since, home=home):
-        records = build_cursor_transcript_records(transcript_path, start_turn=start_turn + imported)
+        raw_session = f"cursor:{transcript_path.stem}"
+        records = build_cursor_transcript_records(transcript_path, start_turn=1)
         for record in records:
-            await writer.write(record)
+            await dispatcher.write(raw_session, record)
             imported += 1
     return imported
