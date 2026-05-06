@@ -89,10 +89,13 @@ jobs:
           else
             notes="$(git log --pretty=format:'- %h %s' -n 20)"
           fi
+          release_notes_file="$(mktemp)"
+          {
+            echo "$notes"
+            echo
+            echo "Docker image:"
+            echo "- ${image}"
+          } > "$release_notes_file"
           gh release create "$tag" \
             --title "$tag" \
-            --notes "${notes}
-
-Docker image:
-- ${image}
-"
+            --notes-file "$release_notes_file"
