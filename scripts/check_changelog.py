@@ -9,7 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-TAG_RE = re.compile(r"^v(?P<version>\d+\.\d+\.\d+)$")
+TAG_RE = re.compile(r"^(?:release-)?v(?P<version>\d+\.\d+\.\d+)$")
 CHANGELOG_HEADING_RE = re.compile(r"^## \[(?P<version>\d+\.\d+\.\d+)\](?:\s+-\s+\d{4}-\d{2}-\d{2})?\s*$", re.MULTILINE)
 
 
@@ -54,7 +54,7 @@ def required_tag(repo_root: Path, explicit_tag: str | None) -> str | None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=Path.cwd(), help="Repository root path")
-    parser.add_argument("--tag", help="Release tag to require, e.g. v0.1.40")
+    parser.add_argument("--tag", help="Release tag to require, e.g. v0.1.40 or release-v0.1.40")
     return parser
 
 

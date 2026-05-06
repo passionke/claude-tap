@@ -4,9 +4,11 @@
 services:
   claude-tap:
     build: .
+    env_file:
+      - .env
     ports:
-      - "8080:8080"
-      - "3000:3000"
+      - "${CLAUDE_TAP_PORT:-8080}:${CLAUDE_TAP_PORT:-8080}"
+      - "${CLAUDE_TAP_LIVE_PORT:-3000}:${CLAUDE_TAP_LIVE_PORT:-3000}"
     volumes:
       - ./traces:/data/traces
     command:
@@ -14,11 +16,15 @@ services:
       - --tap-no-launch
       - --tap-host
       - "0.0.0.0"
+      - --tap-target
+      - "${OPENAI_BASE_URL:-https://api.openai.com}"
       - --tap-port
-      - "8080"
+      - "${CLAUDE_TAP_PORT:-8080}"
       - --tap-live
       - --tap-live-port
-      - "3000"
+      - "${CLAUDE_TAP_LIVE_PORT:-3000}"
       - --tap-output-dir
       - /data/traces
+      - --tap-no-update-check
+      - --tap-no-auto-update
     restart: unless-stopped

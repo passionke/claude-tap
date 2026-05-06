@@ -4,10 +4,11 @@ on:
   push:
     tags:
       - "v*"
+      - "release-v*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to publish (e.g. v0.1.27)"
+        description: "Tag to publish (e.g. v0.1.27 or release-v0.1.27)"
         required: true
 
 jobs:
