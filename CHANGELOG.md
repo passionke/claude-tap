@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+## [0.0.3] - 2026-05-07
+
+### Fixed
+- Align `claude_tap.__init__` exports and tests with removal of PyPI self-update helpers.
+
 ## [0.0.2] - 2026-05-07
 
 ### Changed

@@ -11,11 +11,9 @@ from claude_tap.certs import CertificateAuthority, ensure_ca
 from claude_tap.cli import (
     __version__,
     _cleanup_traces,
-    _detect_installer,
     _load_manifest,
     _register_trace,
     _save_manifest,
-    _version_tuple,
     async_main,
     dashboard_main,
     main_entry,
@@ -33,11 +31,9 @@ from claude_tap.viewer import _generate_html_viewer
 __all__ = [
     "__version__",
     "_cleanup_traces",
-    "_detect_installer",
     "_load_manifest",
     "_register_trace",
     "_save_manifest",
-    "_version_tuple",
     "main_entry",
     "parse_args",
     "parse_dashboard_args",

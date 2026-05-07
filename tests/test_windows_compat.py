@@ -8,13 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import signal
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-from claude_tap.cli import _rel_posix, _start_background_update, run_client
+from claude_tap.cli import _rel_posix, run_client
 
 
 class _DummyProc:
@@ -98,23 +97,3 @@ def test_rel_posix_uses_forward_slashes(tmp_path: Path) -> None:
     nested.parent.mkdir(parents=True)
     nested.write_text("{}\n", encoding="utf-8")
     assert _rel_posix(nested, tmp_path) == "2026-04-29/trace_001234.jsonl"
-
-
-def test_start_background_update_resolves_uv_shim(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-
-    def fake_popen(cmd, **kwargs):
-        captured["cmd"] = cmd
-        return object()
-
-    shim = r"C:\Users\x\AppData\Local\Programs\uv\uv.cmd"
-    monkeypatch.setattr("claude_tap.cli.shutil.which", lambda name: shim if name == "uv" else None)
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
-
-    _start_background_update("uv")
-    assert captured["cmd"] == [shim, "tool", "upgrade", "claude-tap"]
-
-
-def test_start_background_update_returns_none_when_uv_missing(monkeypatch) -> None:
-    monkeypatch.setattr("claude_tap.cli.shutil.which", lambda _: None)
-    assert _start_background_update("uv") is None

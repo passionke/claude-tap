@@ -1597,74 +1597,23 @@ def test_upstream_unreachable():
 
 
 ## ---------------------------------------------------------------------------
-## Test: version check helpers
+## Test: self-update disabled (fork has no PyPI upgrade path)
 ## ---------------------------------------------------------------------------
 
-
-def test_version_tuple():
-    """Test _version_tuple parsing."""
-    from claude_tap import _version_tuple
-
-    assert _version_tuple("0.1.4") == (0, 1, 4)
-    assert _version_tuple("1.0.0") == (1, 0, 0)
-    assert _version_tuple("10.20.30") == (10, 20, 30)
-    assert _version_tuple("0.1.4") < _version_tuple("0.2.0")
-    assert _version_tuple("1.0.0") > _version_tuple("0.99.99")
-    print("  test_version_tuple PASSED")
-
-
-def test_detect_installer():
-    """Test _detect_installer returns 'uv' or 'pip'."""
-    from claude_tap import _detect_installer
-
-    result = _detect_installer()
-    assert result in ("uv", "pip"), f"Unexpected installer: {result}"
-    print(f"  test_detect_installer: detected '{result}' — PASSED")
-
-
-## ---------------------------------------------------------------------------
-## Test: version check with fake PyPI
-## ---------------------------------------------------------------------------
-
-FAKE_PYPI_PORT = 19210
-
-# Minimal fake claude that exits immediately without making any upstream
-# requests.  Used by version-check tests which only care about the update
-# banner printed by claude-tap itself, not about proxied API traffic.
 FAKE_CLAUDE_NOOP_SCRIPT = r'''#!/usr/bin/env python3
 """Fake claude CLI -- exits immediately (no network calls)."""
 print("[fake-claude] noop exit")
 '''
 
 
-@pytest.mark.slow
-def test_version_check_with_fake_pypi():
-    """Test that update check detects a newer version from a fake PyPI server."""
-    from http.server import BaseHTTPRequestHandler, HTTPServer
-
-    class FakePyPI(BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"info": {"version": "99.0.0"}}).encode())
-
-        def log_message(self, format, *args):
-            pass  # silence logs
-
-    server = HTTPServer(("127.0.0.1", FAKE_PYPI_PORT), FakePyPI)
-    t = threading.Thread(target=server.serve_forever, daemon=True)
-    t.start()
-
+def test_self_update_disabled_message():
+    """Startup announces self-update is disabled; no PyPI version banner."""
     project_dir = Path(__file__).parent
-    trace_dir = tempfile.mkdtemp(prefix="claude_tap_test_update_")
+    trace_dir = tempfile.mkdtemp(prefix="claude_tap_test_noselfupdate_")
     fake_bin_dir = _create_fake_claude(FAKE_CLAUDE_NOOP_SCRIPT)
-
     try:
         env = os.environ.copy()
         env["PATH"] = fake_bin_dir + ":" + env.get("PATH", "")
-        env["CLAUDE_TAP_PYPI_URL"] = f"http://127.0.0.1:{FAKE_PYPI_PORT}/pypi/claude-tap/json"
-
         proc = subprocess.run(
             [
                 sys.executable,
@@ -1674,8 +1623,7 @@ def test_version_check_with_fake_pypi():
                 trace_dir,
                 "--tap-no-open",
                 "--tap-target",
-                "http://127.0.0.1:1",  # dummy target; noop client never connects
-                "--tap-no-auto-update",
+                "http://127.0.0.1:1",
             ],
             cwd=str(project_dir),
             env=env,
@@ -1683,76 +1631,14 @@ def test_version_check_with_fake_pypi():
             text=True,
             timeout=30,
         )
-
-        assert "Update available" in proc.stdout, f"Expected 'Update available' in stdout:\n{proc.stdout}"
-        assert "99.0.0" in proc.stdout
-        print("  OK: update available detected")
-        print("  test_version_check_with_fake_pypi PASSED")
+        out = proc.stdout + proc.stderr
+        assert "Self-update is disabled" in out, f"expected disabled message in:\n{out}"
+        assert "Update available" not in out
+        print("  test_self_update_disabled_message PASSED")
     except subprocess.TimeoutExpired as exc:
-        raise AssertionError("claude_tap subprocess timed out (30s) — possible port conflict or hang") from exc
+        raise AssertionError("claude_tap subprocess timed out (30s)") from exc
     finally:
-        server.shutdown()
-        _cleanup(trace_dir, fake_bin_dir, "update_check")
-
-
-FAKE_PYPI_NOCHECK_PORT = 19211
-
-
-def test_version_check_no_update():
-    """Test that no update message when current version matches PyPI."""
-    from http.server import BaseHTTPRequestHandler, HTTPServer
-
-    from claude_tap import __version__
-
-    class FakePyPICurrent(BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"info": {"version": __version__}}).encode())
-
-        def log_message(self, format, *args):
-            pass
-
-    server = HTTPServer(("127.0.0.1", FAKE_PYPI_NOCHECK_PORT), FakePyPICurrent)
-    t = threading.Thread(target=server.serve_forever, daemon=True)
-    t.start()
-
-    project_dir = Path(__file__).parent
-    trace_dir = tempfile.mkdtemp(prefix="claude_tap_test_noupdate_")
-    fake_bin_dir = _create_fake_claude(FAKE_CLAUDE_NOOP_SCRIPT)
-
-    try:
-        env = os.environ.copy()
-        env["PATH"] = fake_bin_dir + ":" + env.get("PATH", "")
-        env["CLAUDE_TAP_PYPI_URL"] = f"http://127.0.0.1:{FAKE_PYPI_NOCHECK_PORT}/pypi/claude-tap/json"
-
-        proc = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "claude_tap",
-                "--tap-output-dir",
-                trace_dir,
-                "--tap-no-open",
-                "--tap-target",
-                "http://127.0.0.1:1",  # dummy target; noop client never connects
-            ],
-            cwd=str(project_dir),
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-
-        assert "Update available" not in proc.stdout, f"Unexpected 'Update available' in stdout:\n{proc.stdout}"
-        print("  OK: no update message when version matches")
-        print("  test_version_check_no_update PASSED")
-    except subprocess.TimeoutExpired as exc:
-        raise AssertionError("claude_tap subprocess timed out (30s) — possible port conflict or hang") from exc
-    finally:
-        server.shutdown()
-        _cleanup(trace_dir, fake_bin_dir, "no_update")
+        _cleanup(trace_dir, fake_bin_dir, "noselfupdate")
 
 
 ## ---------------------------------------------------------------------------
@@ -2741,8 +2627,6 @@ if __name__ == "__main__":
     test_cert_generation()
     test_filter_headers()
     test_sse_reassembler()
-    test_version_tuple()
-    test_detect_installer()
     test_trace_cleanup()
     test_trace_tagging_safety()
     test_manifest_migration()
@@ -2756,8 +2640,7 @@ if __name__ == "__main__":
     test_large_payload()
     test_concurrent_requests()
     test_upstream_unreachable()
-    test_version_check_with_fake_pypi()
-    test_version_check_no_update()
+    test_self_update_disabled_message()
     test_e2e_with_cleanup()
     print("\n" + "=" * 60)
     print("  ALL TESTS PASSED")
