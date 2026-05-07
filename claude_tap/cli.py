@@ -9,12 +9,9 @@ import logging
 import os
 import shutil
 import signal
-import subprocess
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
 import webbrowser
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -420,18 +417,7 @@ async def async_main(args: argparse.Namespace):
 
     print(f"📁 Trace directory: {date_dir}")
 
-    # Background update check
-    if not args.no_update_check:
-        try:
-            latest = await _check_pypi_version()
-            if latest and _version_tuple(latest) > _version_tuple(__version__):
-                print(f"⬆️  Update available: {__version__} → {latest}")
-                if not args.no_auto_update:
-                    installer = _detect_installer()
-                    _start_background_update(installer)
-                    print(f"   Downloading update in background ({installer})...")
-        except Exception:
-            pass
+    print("ℹ️  Self-update is disabled in this fork; ignoring update check/auto-update options.")
 
     exit_code = 0
     client_started_at = time.time()
@@ -694,6 +680,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     # -- Storage & update options --
     storage_group = tap_parser.add_argument_group("storage and update options")
+    running_in_container = os.path.exists("/.dockerenv")
+    disable_self_update_by_default = running_in_container or os.environ.get("CLAUDE_TAP_DISABLE_SELF_UPDATE") == "1"
     storage_group.add_argument(
         "--tap-output-dir", default="./.traces", dest="output_dir", help="Trace output directory (default: ./.traces)"
     )
@@ -707,14 +695,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     storage_group.add_argument(
         "--tap-no-update-check",
         action="store_true",
+        default=disable_self_update_by_default,
         dest="no_update_check",
-        help="Disable PyPI update check on startup",
+        help="Deprecated no-op (self-update is always disabled in this fork)",
     )
     storage_group.add_argument(
         "--tap-no-auto-update",
         action="store_true",
+        default=disable_self_update_by_default,
         dest="no_auto_update",
-        help="Check for updates but don't auto-download",
+        help="Deprecated no-op (self-update is always disabled in this fork)",
     )
     args, claude_args = tap_parser.parse_known_args(argv)
     # Strip leading "--" separator if present (argparse leaves it in remainder)
@@ -796,56 +786,6 @@ async def dashboard_main(args: argparse.Namespace) -> int:
     finally:
         await server.stop()
     return 0
-
-
-# ---------------------------------------------------------------------------
-# Smart update check
-# ---------------------------------------------------------------------------
-
-
-def _version_tuple(v: str) -> tuple[int, ...]:
-    """Parse '0.1.4' into (0, 1, 4) for comparison."""
-    return tuple(int(x) for x in v.strip().split(".") if x.isdigit())
-
-
-async def _check_pypi_version(timeout: float = 3.0) -> str | None:
-    """Check PyPI for the latest version. Returns version string or None."""
-    url = os.environ.get("CLAUDE_TAP_PYPI_URL", "https://pypi.org/pypi/claude-tap/json")
-
-    def _fetch() -> str | None:
-        try:
-            req = urllib.request.Request(url, headers={"Accept": "application/json"})
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                data = json.loads(resp.read())
-                return data.get("info", {}).get("version")
-        except Exception:
-            return None
-
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _fetch)
-
-
-def _detect_installer() -> str:
-    """Detect whether claude-tap was installed via uv or pip."""
-    exe = sys.executable or ""
-    if "uv" in exe.lower() or shutil.which("uv"):
-        return "uv"
-    return "pip"
-
-
-def _start_background_update(installer: str) -> subprocess.Popen | None:
-    """Start a background process to upgrade claude-tap."""
-    try:
-        if installer == "uv":
-            uv_path = shutil.which("uv")
-            if uv_path is None:
-                return None
-            cmd = [uv_path, "tool", "upgrade", "claude-tap"]
-        else:
-            cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "claude-tap"]
-        return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception:
-        return None
 
 
 # ---------------------------------------------------------------------------

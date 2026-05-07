@@ -16,4 +16,4 @@ ENV PYTHONUNBUFFERED=1
 
 EXPOSE 8080 3000
 
-CMD ["claude-tap", "--tap-no-launch", "--tap-host", "0.0.0.0", "--tap-port", "8080", "--tap-live", "--tap-live-port", "3000", "--tap-output-dir", "/data/traces"]
+CMD ["claude-tap", "--tap-no-launch", "--tap-host", "0.0.0.0", "--tap-port", "8080", "--tap-live", "--tap-live-port", "3000", "--tap-output-dir", "/data/traces", "--tap-no-update-check", "--tap-no-auto-update"]

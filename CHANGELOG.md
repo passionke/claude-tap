@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+## [0.0.2] - 2026-05-07
+
+### Changed
+- Remove PyPI self-update and background upgrade logic; print that self-update is disabled in this fork.
+- Docker image default command disables update check and auto-update flags.
+
 ## [0.0.1] - 2026-05-07
 
 ### Added
