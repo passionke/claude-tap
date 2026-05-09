@@ -7,7 +7,8 @@ import hashlib
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from claude_tap.claw_session import DEFAULT_CLAW_SESSION_ID, sanitize_filename_suffix
+from claude_tap.claw_session import sanitize_filename_suffix
+from claude_tap.session_index import SESSIONS_SUBDIR, SessionIndex, jsonl_relpath_for_slug
 from claude_tap.trace import TraceWriter
 
 if TYPE_CHECKING:
@@ -19,12 +20,12 @@ class SessionTraceDispatcher:
 
     def __init__(
         self,
-        date_dir: Path,
-        time_str: str,
+        output_dir: Path,
+        session_index: SessionIndex,
         live_server: "LiveViewerServer | None" = None,
     ) -> None:
-        self._date_dir = date_dir
-        self._time_str = time_str
+        self._output_dir = Path(output_dir)
+        self._session_index = session_index
         self._live_server = live_server
         self._lock = asyncio.Lock()
         self._writers: dict[str, TraceWriter] = {}
@@ -54,14 +55,21 @@ class SessionTraceDispatcher:
         return slug
 
     def jsonl_path_for_slug(self, slug: str) -> Path:
-        return self._date_dir / f"trace_{self._time_str}__{slug}.jsonl"
+        return self._output_dir / SESSIONS_SUBDIR / slug / "trace.jsonl"
 
     async def alloc_turn(self, raw_claw_session_id: str) -> int:
         """Allocate next turn index for this session (1-based within that session)."""
         slug = self._slug_for(raw_claw_session_id)
+        relpath = jsonl_relpath_for_slug(slug)
+        self._session_index.upsert_session_row(raw_claw_session_id, slug, relpath)
         async with self._lock:
-            self._turns[slug] = self._turns.get(slug, 0) + 1
-            return self._turns[slug]
+            if slug not in self._turns:
+                last = self._session_index.get_last_turn(raw_claw_session_id)
+                self._turns[slug] = last
+            self._turns[slug] += 1
+            turn = self._turns[slug]
+        self._session_index.record_write(raw_claw_session_id, turn)
+        return turn
 
     async def _ensure_writer(self, raw_claw_session_id: str) -> TraceWriter:
         slug = self._slug_for(raw_claw_session_id)
@@ -70,7 +78,9 @@ class SessionTraceDispatcher:
         async with self._lock:
             if slug in self._writers:
                 return self._writers[slug]
-            path = self.jsonl_path_for_slug(slug)
+            relpath = jsonl_relpath_for_slug(slug)
+            self._session_index.upsert_session_row(raw_claw_session_id, slug, relpath)
+            path = self._output_dir / relpath
             writer = TraceWriter(path, live_server=self._live_server)
             self._writers[slug] = writer
             return writer
@@ -80,6 +90,12 @@ class SessionTraceDispatcher:
         record["claw_session_id"] = raw_claw_session_id
         writer = await self._ensure_writer(raw_claw_session_id)
         await writer.write(record)
+        turn = record.get("turn", 0)
+        try:
+            turn_i = int(turn)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            turn_i = 0
+        self._session_index.record_write(raw_claw_session_id, turn_i)
 
     def close(self) -> None:
         for w in self._writers.values():
@@ -88,10 +104,6 @@ class SessionTraceDispatcher:
     def iter_session_paths(self) -> list[Path]:
         """JSONL paths in stable order (sorted by slug)."""
         return sorted(w.path for w in self._writers.values())
-
-    def default_primary_trace_path(self) -> Path:
-        """Path used for legacy single-file UX when listing primary trace (anonymous bucket)."""
-        return self.jsonl_path_for_slug(self._slug_for(DEFAULT_CLAW_SESSION_ID))
 
     def total_record_count(self) -> int:
         """Total persisted records across all session writers."""

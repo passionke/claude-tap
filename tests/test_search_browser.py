@@ -44,9 +44,21 @@ def _load_entries(trace_file: Path) -> list[dict]:
     return [json.loads(line) for line in lines if line.strip()]
 
 
+def _list_trace_jsonl_under_traces(traces_dir: Path) -> list[Path]:
+    """Legacy flat ``trace_*.jsonl``, per-session ``sessions/*/trace.jsonl``, and dated subdirs."""
+    paths: list[Path] = []
+    paths.extend(traces_dir.glob("trace_*.jsonl"))
+    paths.extend(traces_dir.glob("sessions/*/trace.jsonl"))
+    if traces_dir.is_dir():
+        for child in traces_dir.iterdir():
+            if child.is_dir() and child.name != "sessions":
+                paths.extend(child.glob("trace_*.jsonl"))
+    return sorted(set(paths), key=lambda p: p.stat().st_size)
+
+
 def _pick_real_trace_file() -> Path:
     traces_dir = Path(__file__).parent.parent / ".traces"
-    trace_files = sorted(traces_dir.glob("trace_*.jsonl"), key=lambda p: p.stat().st_size)
+    trace_files = _list_trace_jsonl_under_traces(traces_dir)
     candidates = []
     for path in trace_files:
         if path.stat().st_size == 0:
@@ -151,7 +163,7 @@ def _score_diff_messages(old_msgs: list[dict], new_msgs: list[dict]) -> int:
 
 def _pick_real_trace_file_for_diff() -> tuple[Path, int]:
     traces_dir = Path(__file__).parent.parent / ".traces"
-    trace_files = sorted(traces_dir.glob("trace_*.jsonl"))
+    trace_files = _list_trace_jsonl_under_traces(traces_dir)
     best_path = None
     best_idx = -1
     best_score = -1

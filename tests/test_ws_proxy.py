@@ -13,6 +13,9 @@ from yarl import URL
 
 from claude_tap.proxy import _build_ws_record, _get_ws_proxy_settings, proxy_handler
 from claude_tap.session_dispatcher import SessionTraceDispatcher
+from tests.conftest import make_trace_dispatcher
+
+_WS_SESS_HEADERS = {"Claw-Session-Id": "ws-test-session"}
 
 
 @pytest.fixture
@@ -100,9 +103,8 @@ async def test_websocket_proxy_basic(trace_dir):
                 break
         return ws
 
-    dd = Path(trace_dir) / "2099-06-01"
-    dd.mkdir(parents=True)
-    dispatcher = SessionTraceDispatcher(dd, "120001", live_server=None)
+    root = Path(trace_dir)
+    dispatcher = make_trace_dispatcher(root)
 
     upstream_runner, upstream_port = await _start_ws_upstream(ws_upstream_handler)
     proxy_runner, proxy_port, proxy_session = await _start_proxy(
@@ -113,7 +115,10 @@ async def test_websocket_proxy_basic(trace_dir):
 
     try:
         async with aiohttp.ClientSession() as client:
-            ws = await client.ws_connect(f"http://127.0.0.1:{proxy_port}/v1/responses")
+            ws = await client.ws_connect(
+                f"http://127.0.0.1:{proxy_port}/v1/responses",
+                headers=_WS_SESS_HEADERS,
+            )
             await ws.send_json({"model": "gpt-test", "input": "hello"})
 
             received = []
@@ -140,12 +145,12 @@ async def test_websocket_proxy_basic(trace_dir):
         await asyncio.sleep(0.1)
         dispatcher.close()
 
-        paths = sorted(dd.glob("trace_*.jsonl"))
+        paths = sorted(root.glob("sessions/*/trace.jsonl"))
         assert len(paths) == 1
         records = [json.loads(line) for line in paths[0].read_text().splitlines() if line.strip()]
         assert len(records) == 1
         r = records[0]
-        assert r["claw_session_id"] == "_anonymous"
+        assert r["claw_session_id"] == "ws-test-session"
         assert r["transport"] == "websocket"
         assert r["request"]["method"] == "WEBSOCKET"
         assert r["request"]["path"] == "/v1/responses"
@@ -182,9 +187,8 @@ async def test_websocket_upstream_connect_does_not_override_proxy(trace_dir):
                 break
         return ws
 
-    dd = Path(trace_dir) / "2099-06-02"
-    dd.mkdir(parents=True)
-    dispatcher = SessionTraceDispatcher(dd, "120002", live_server=None)
+    root = Path(trace_dir)
+    dispatcher = make_trace_dispatcher(root)
 
     upstream_runner, upstream_port = await _start_ws_upstream(ws_upstream_handler)
     proxy_runner, proxy_port, proxy_session = await _start_proxy(
@@ -204,7 +208,10 @@ async def test_websocket_upstream_connect_does_not_override_proxy(trace_dir):
 
     try:
         async with aiohttp.ClientSession() as client:
-            ws = await client.ws_connect(f"http://127.0.0.1:{proxy_port}/v1/responses")
+            ws = await client.ws_connect(
+                f"http://127.0.0.1:{proxy_port}/v1/responses",
+                headers=_WS_SESS_HEADERS,
+            )
             await ws.send_str("hello")
             msg = await asyncio.wait_for(ws.receive(), timeout=5)
             assert msg.type == aiohttp.WSMsgType.TEXT
@@ -228,9 +235,8 @@ async def test_websocket_upstream_connect_does_not_override_proxy(trace_dir):
 async def test_websocket_upstream_failure(trace_dir):
     """When upstream WS connect fails, return HTTP 502 and record the error."""
 
-    dd = Path(trace_dir) / "2099-06-03"
-    dd.mkdir(parents=True)
-    dispatcher = SessionTraceDispatcher(dd, "120003", live_server=None)
+    root = Path(trace_dir)
+    dispatcher = make_trace_dispatcher(root)
 
     # Point proxy at a port where nothing is listening
     proxy_runner, proxy_port, proxy_session = await _start_proxy(
@@ -243,13 +249,16 @@ async def test_websocket_upstream_failure(trace_dir):
         async with aiohttp.ClientSession() as client:
             # Attempt WebSocket upgrade — proxy should return 502
             with pytest.raises(aiohttp.WSServerHandshakeError) as exc_info:
-                await client.ws_connect(f"http://127.0.0.1:{proxy_port}/v1/responses")
+                await client.ws_connect(
+                    f"http://127.0.0.1:{proxy_port}/v1/responses",
+                    headers=_WS_SESS_HEADERS,
+                )
             assert exc_info.value.status == 502
 
         await asyncio.sleep(0.1)
         dispatcher.close()
 
-        paths = sorted(dd.glob("trace_*.jsonl"))
+        paths = sorted(root.glob("sessions/*/trace.jsonl"))
         records = [json.loads(line) for line in paths[0].read_text().splitlines() if line.strip()]
         assert len(records) == 1
         r = records[0]
@@ -381,9 +390,8 @@ async def test_websocket_and_http_coexist(trace_dir):
                 }
             )
 
-    dd = Path(trace_dir) / "2099-06-04"
-    dd.mkdir(parents=True)
-    dispatcher = SessionTraceDispatcher(dd, "120004", live_server=None)
+    root = Path(trace_dir)
+    dispatcher = make_trace_dispatcher(root)
 
     upstream_runner, upstream_port = await _start_ws_upstream(mixed_handler)
     proxy_runner, proxy_port, proxy_session = await _start_proxy(
@@ -397,12 +405,16 @@ async def test_websocket_and_http_coexist(trace_dir):
             resp = await client.post(
                 f"http://127.0.0.1:{proxy_port}/v1/messages",
                 json={"model": "test-model", "messages": [{"role": "user", "content": "hi"}]},
+                headers=_WS_SESS_HEADERS,
             )
             assert resp.status == 200
             await resp.json()
 
             # WebSocket request
-            ws = await client.ws_connect(f"http://127.0.0.1:{proxy_port}/v1/responses")
+            ws = await client.ws_connect(
+                f"http://127.0.0.1:{proxy_port}/v1/responses",
+                headers=_WS_SESS_HEADERS,
+            )
             await ws.send_json({"model": "test-model", "input": "ws hello"})
             msg = await asyncio.wait_for(ws.receive(), timeout=5)
             assert msg.type == aiohttp.WSMsgType.TEXT
@@ -413,10 +425,11 @@ async def test_websocket_and_http_coexist(trace_dir):
         await asyncio.sleep(0.1)
         dispatcher.close()
 
-        paths = sorted(dd.glob("trace_*.jsonl"))
+        paths = sorted(root.glob("sessions/*/trace.jsonl"))
         assert len(paths) == 1
         records = [json.loads(line) for line in paths[0].read_text().splitlines() if line.strip()]
         assert len(records) == 2
+        assert all(r.get("claw_session_id") == "ws-test-session" for r in records)
 
         http_rec = next(r for r in records if r.get("transport") != "websocket")
         ws_rec = next(r for r in records if r.get("transport") == "websocket")

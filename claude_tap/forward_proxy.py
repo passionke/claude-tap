@@ -347,10 +347,13 @@ class ForwardProxyServer:
     ) -> None:
         """Forward request to upstream, record trace, send response back."""
         raw_claw = extract_claw_session_id(headers)
-        turn = await self._dispatcher.alloc_turn(raw_claw)
+        if raw_claw is not None:
+            turn = await self._dispatcher.alloc_turn(raw_claw)
+        else:
+            turn = 0
         req_id = f"req_{uuid.uuid4().hex[:12]}"
         t0 = time.monotonic()
-        log_prefix = f"[Turn {turn}]"
+        log_prefix = f"[Turn {turn}]" if raw_claw is not None else "[proxy]"
 
         # Parse request body for logging
         try:
@@ -431,7 +434,7 @@ class ForwardProxyServer:
         path: str,
         req_headers: dict[str, str],
         req_body: dict | None,
-        raw_claw_session_id: str,
+        raw_claw_session_id: str | None,
         log_prefix: str,
     ) -> None:
         """Handle a streaming response: forward chunks while recording SSE."""
@@ -492,7 +495,8 @@ class ForwardProxyServer:
             reconstructed,
             sse_events=reassembler.events,
         )
-        await self._dispatcher.write(raw_claw_session_id, record)
+        if raw_claw_session_id is not None:
+            await self._dispatcher.write(raw_claw_session_id, record)
 
     async def _handle_non_streaming(
         self,
@@ -505,7 +509,7 @@ class ForwardProxyServer:
         path: str,
         req_headers: dict[str, str],
         req_body: dict | None,
-        raw_claw_session_id: str,
+        raw_claw_session_id: str | None,
         log_prefix: str,
     ) -> None:
         """Handle a non-streaming response."""
@@ -543,7 +547,8 @@ class ForwardProxyServer:
             dict(upstream_resp.headers),
             resp_body,
         )
-        await self._dispatcher.write(raw_claw_session_id, record)
+        if raw_claw_session_id is not None:
+            await self._dispatcher.write(raw_claw_session_id, record)
 
         # Send response to client
         status_line = f"HTTP/1.1 {upstream_resp.status} {upstream_resp.reason}\r\n"
@@ -568,10 +573,13 @@ class ForwardProxyServer:
     ) -> None:
         """Relay a WebSocket upgrade received inside the CONNECT tunnel."""
         raw_claw = extract_claw_session_id(headers)
-        turn = await self._dispatcher.alloc_turn(raw_claw)
+        if raw_claw is not None:
+            turn = await self._dispatcher.alloc_turn(raw_claw)
+        else:
+            turn = 0
         req_id = f"req_{uuid.uuid4().hex[:12]}"
         t0 = time.monotonic()
-        log_prefix = f"[Turn {turn}]"
+        log_prefix = f"[Turn {turn}]" if raw_claw is not None else "[proxy]"
         upstream_base_url = f"https://{hostname}:{port}"
         upstream_ws_url = f"wss://{hostname}:{port}{path}"
 
@@ -632,7 +640,8 @@ class ForwardProxyServer:
                 "response": {"status": 502, "headers": {}, "body": None, "error": str(exc)},
                 "upstream_base_url": upstream_base_url,
             }
-            await self._dispatcher.write(raw_claw, record)
+            if raw_claw is not None:
+                await self._dispatcher.write(raw_claw, record)
             return
 
         sec_key = headers.get("Sec-WebSocket-Key") or headers.get("sec-websocket-key")
@@ -762,7 +771,8 @@ class ForwardProxyServer:
             "upstream_base_url": upstream_base_url,
         }
         record["response"]["body"] = reconstruct_ws_response_body(record["response"]["ws_events"])
-        await self._dispatcher.write(raw_claw, record)
+        if raw_claw is not None:
+            await self._dispatcher.write(raw_claw, record)
         log.info(
             f"{log_prefix} <- WS closed ({duration_ms}ms, "
             f"{len(client_messages)} client→upstream, {len(server_messages)} upstream→client)"

@@ -23,6 +23,8 @@ from pathlib import Path
 import pytest
 from yarl import URL
 
+from tests.conftest import make_trace_dispatcher
+
 FAKE_UPSTREAM_PORT = 19199
 
 FAKE_CLAUDE_SCRIPT = r'''#!/usr/bin/env python3
@@ -42,6 +44,7 @@ req = urllib.request.Request(url, data=req_body, headers={
     "Content-Type": "application/json",
     "x-api-key": "sk-ant-test-key-12345678",
     "anthropic-version": "2023-06-01",
+    "claw-session-id": "e2e-fake-claude",
 })
 try:
     with urllib.request.urlopen(req) as resp:
@@ -66,6 +69,7 @@ req2 = urllib.request.Request(url, data=req_body2, headers={
     "Content-Type": "application/json",
     "x-api-key": "sk-ant-test-key-12345678",
     "anthropic-version": "2023-06-01",
+    "claw-session-id": "e2e-fake-claude",
 })
 try:
     with urllib.request.urlopen(req2) as resp:
@@ -271,7 +275,7 @@ def _run_test(upstream_port):
 
     # ── Assertions ──
 
-    # Trace file exists (may be in a date-based subdirectory, e.g. trace_dir/YYYY-MM-DD/)
+    # Trace file exists under sessions/{slug}/trace.jsonl
     trace_files = list(Path(trace_dir).glob("**/*.jsonl"))
     assert len(trace_files) == 1, f"Expected 1 trace file, got {trace_files}"
     trace_file = trace_files[0]
@@ -472,6 +476,7 @@ req = urllib.request.Request(url, data=req_body, headers={
     "Content-Type": "application/json",
     "x-api-key": "sk-ant-test-key-12345678",
     "anthropic-version": "2023-06-01",
+    "claw-session-id": "e2e-fake-claude",
 })
 try:
     with urllib.request.urlopen(req) as resp:
@@ -582,6 +587,7 @@ req = urllib.request.Request(url, data=req_body, headers={
     "Content-Type": "application/json",
     "x-api-key": "sk-ant-test-key-12345678",
     "anthropic-version": "2023-06-01",
+    "claw-session-id": "e2e-fake-claude",
 })
 try:
     with urllib.request.urlopen(req) as resp:
@@ -741,6 +747,7 @@ req = urllib.request.Request(url, data=req_body, headers={
     "Content-Type": "application/json",
     "x-api-key": "sk-ant-test-key-12345678",
     "anthropic-version": "2023-06-01",
+    "claw-session-id": "e2e-fake-claude",
 })
 try:
     with urllib.request.urlopen(req) as resp:
@@ -877,6 +884,7 @@ def send_request(idx):
         "Content-Type": "application/json",
         "x-api-key": "sk-ant-test-key-12345678",
         "anthropic-version": "2023-06-01",
+        "claw-session-id": "e2e-fake-claude",
     })
     try:
         with urllib.request.urlopen(req) as resp:
@@ -1243,6 +1251,7 @@ req_body = json.dumps({
 req = urllib.request.Request(url, data=req_body, headers={
     "Content-Type": "application/json",
     "Authorization": "Bearer sk-openai-test-key-12345678",
+    "claw-session-id": "e2e-fake-codex",
 })
 try:
     with urllib.request.urlopen(req) as resp:
@@ -1343,6 +1352,7 @@ req = urllib.request.Request(url, data=compressed, headers={
     "Content-Type": "application/json",
     "Content-Encoding": "zstd",
     "Authorization": "Bearer sk-test",
+    "claw-session-id": "e2e-fake-codex-zstd",
 })
 try:
     with urllib.request.urlopen(req) as resp:
@@ -1515,6 +1525,7 @@ req = urllib.request.Request(url, data=req_body, headers={
     "Content-Type": "application/json",
     "x-api-key": "sk-ant-test-key-12345678",
     "anthropic-version": "2023-06-01",
+    "claw-session-id": "e2e-fake-claude",
 })
 try:
     with urllib.request.urlopen(req) as resp:
@@ -1646,76 +1657,75 @@ def test_self_update_disabled_message():
 ## ---------------------------------------------------------------------------
 
 
+def _seed_indexed_session(output_dir: Path, claw_session_id: str) -> None:
+    """Create a minimal JSONL + SQLite row for cleanup tests."""
+    import time
+
+    from claude_tap.claw_session import sanitize_filename_suffix
+    from claude_tap.session_index import SessionIndex, jsonl_relpath_for_slug
+
+    slug = sanitize_filename_suffix(claw_session_id)
+    relp = jsonl_relpath_for_slug(slug)
+    p = output_dir / relp
+    p.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(
+        {"request_id": "x", "turn": 1, "claw_session_id": claw_session_id},
+        ensure_ascii=False,
+    )
+    p.write_text(line + "\n", encoding="utf-8")
+    idx = SessionIndex(output_dir)
+    idx.upsert_session_row(claw_session_id, slug, relp)
+    idx.record_write(claw_session_id, 1)
+    idx.close()
+    time.sleep(0.02)
+
+
 def test_trace_cleanup():
-    """Test _cleanup_traces removes oldest traces while keeping newest."""
-    from claude_tap import _cleanup_traces, _load_manifest, _register_trace, _save_manifest
+    """Test _cleanup_traces removes oldest sessions while keeping newest."""
+    from claude_tap import _cleanup_traces
+    from claude_tap.session_index import SessionIndex
 
     with tempfile.TemporaryDirectory() as tmpdir:
         output_dir = Path(tmpdir)
 
-        # Initialize empty manifest first to prevent auto-migration
-        _save_manifest(output_dir, {"_cloudtap": True, "version": "test", "traces": []})
-
-        # Create 5 trace sessions
         for i in range(5):
-            ts = f"20260218_00000{i}"
-            files = [f"trace_{ts}.jsonl", f"trace_{ts}.log", f"trace_{ts}.html"]
-            for f in files:
-                (output_dir / f).write_text(f"data for {f}")
-            _register_trace(output_dir, ts, files)
+            _seed_indexed_session(output_dir, f"sess-cleanup-{i}")
 
-        manifest = _load_manifest(output_dir)
-        assert len(manifest["traces"]) == 5
+        idx = SessionIndex(output_dir)
+        assert idx.session_count() == 5
+        idx.close()
 
-        # Cleanup to keep 3
         removed = _cleanup_traces(output_dir, 3)
         assert removed == 2, f"Expected 2 removed, got {removed}"
 
-        # Verify oldest 2 deleted
-        assert not (output_dir / "trace_20260218_000000.jsonl").exists()
-        assert not (output_dir / "trace_20260218_000001.jsonl").exists()
-        # Newest 3 preserved
-        assert (output_dir / "trace_20260218_000002.jsonl").exists()
-        assert (output_dir / "trace_20260218_000003.jsonl").exists()
-        assert (output_dir / "trace_20260218_000004.jsonl").exists()
-
-        # Manifest updated
-        manifest = _load_manifest(output_dir)
-        assert len(manifest["traces"]) == 3
-        timestamps = [t["timestamp"] for t in manifest["traces"]]
-        assert "20260218_000000" not in timestamps
-        assert "20260218_000001" not in timestamps
+        idx = SessionIndex(output_dir)
+        assert idx.session_count() == 3
+        remaining = {r.claw_session_id for r in idx.list_sessions(10, 0)[0]}
+        idx.close()
+        assert "sess-cleanup-0" not in remaining
+        assert "sess-cleanup-1" not in remaining
+        assert "sess-cleanup-4" in remaining
 
         print("  test_trace_cleanup PASSED")
 
 
 def test_trace_tagging_safety():
-    """Test that cleanup never deletes files not registered in the manifest."""
-    from claude_tap import _cleanup_traces, _register_trace, _save_manifest
+    """Test that cleanup only removes indexed session dirs, not arbitrary files."""
+    from claude_tap import _cleanup_traces
 
     with tempfile.TemporaryDirectory() as tmpdir:
         output_dir = Path(tmpdir)
 
-        # Initialize empty manifest first to prevent auto-migration
-        _save_manifest(output_dir, {"_cloudtap": True, "version": "test", "traces": []})
-
-        # Create non-CloudTap files
         (output_dir / "important_data.jsonl").write_text("do not delete")
         (output_dir / "my_notes.txt").write_text("also important")
         (output_dir / "trace_manual_export.jsonl").write_text("user file")
 
-        # Register 5 CloudTap traces
         for i in range(5):
-            ts = f"20260218_01000{i}"
-            files = [f"trace_{ts}.jsonl"]
-            (output_dir / files[0]).write_text(f"trace data {i}")
-            _register_trace(output_dir, ts, files)
+            _seed_indexed_session(output_dir, f"sess-safe-{i}")
 
-        # Cleanup to keep 2
         removed = _cleanup_traces(output_dir, 2)
         assert removed == 3
 
-        # Non-CloudTap files must be untouched
         assert (output_dir / "important_data.jsonl").exists()
         assert (output_dir / "my_notes.txt").exists()
         assert (output_dir / "trace_manual_export.jsonl").exists()
@@ -1724,43 +1734,19 @@ def test_trace_tagging_safety():
         print("  test_trace_tagging_safety PASSED")
 
 
-def test_manifest_migration():
-    """Test that existing trace files without manifest are auto-migrated."""
-    from claude_tap import _cleanup_traces, _load_manifest
+def test_cleanup_traces_empty_output_dir():
+    """_cleanup_traces on an empty trace directory is a no-op."""
+    from claude_tap import _cleanup_traces
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        output_dir = Path(tmpdir)
+        assert _cleanup_traces(Path(tmpdir), 3) == 0
 
-        # Create old-format trace files (no manifest)
-        for i in range(4):
-            ts = f"20260218_02000{i}"
-            (output_dir / f"trace_{ts}.jsonl").write_text(f"old data {i}")
-            (output_dir / f"trace_{ts}.log").write_text(f"old log {i}")
-
-        # Load manifest — should trigger migration
-        manifest = _load_manifest(output_dir)
-        assert len(manifest["traces"]) == 4, f"Expected 4 migrated traces, got {len(manifest['traces'])}"
-
-        # Verify all timestamps present
-        timestamps = sorted(t["timestamp"] for t in manifest["traces"])
-        assert timestamps == ["20260218_020000", "20260218_020001", "20260218_020002", "20260218_020003"]
-
-        # Verify companion files detected
-        for entry in manifest["traces"]:
-            assert len(entry["files"]) == 2  # .jsonl + .log
-
-        # Now cleanup should work on migrated entries
-        removed = _cleanup_traces(output_dir, 2)
-        assert removed == 2
-        assert not (output_dir / "trace_20260218_020000.jsonl").exists()
-        assert (output_dir / "trace_20260218_020003.jsonl").exists()
-
-        print("  test_manifest_migration PASSED")
+    print("  test_cleanup_traces_empty_output_dir PASSED")
 
 
 def test_e2e_with_cleanup():
-    """E2E test: pre-fill traces, run claude-tap with --tap-max-traces, verify cleanup."""
-    from claude_tap import _register_trace
+    """E2E test: pre-fill indexed sessions, run claude-tap with --tap-max-traces, verify cleanup."""
+    from claude_tap.session_index import SessionIndex
 
     stop_upstream, upstream_port = run_fake_upstream_in_thread()
 
@@ -1770,13 +1756,8 @@ def test_e2e_with_cleanup():
     fake_bin_dir = _create_fake_claude(FAKE_CLAUDE_SCRIPT)
 
     try:
-        # Pre-create 4 old trace sessions with very old timestamps (well before current time)
         for i in range(4):
-            ts = f"20250101_00000{i}"
-            files = [f"trace_{ts}.jsonl", f"trace_{ts}.log"]
-            for f in files:
-                (output_dir / f).write_text(f"old data {f}")
-            _register_trace(output_dir, ts, files)
+            _seed_indexed_session(output_dir, f"e2e-cleanup-{i}")
 
         env = os.environ.copy()
         env["PATH"] = fake_bin_dir + ":" + env.get("PATH", "")
@@ -1810,15 +1791,11 @@ def test_e2e_with_cleanup():
         assert proc.returncode == 0
         assert "Cleaned up" in proc.stdout, f"Expected cleanup message in stdout:\n{proc.stdout}"
 
-        # Should have 3 traces remaining (newest)
-        from claude_tap import _load_manifest
-
-        manifest = _load_manifest(output_dir)
-        assert len(manifest["traces"]) == 3, f"Expected 3 traces, got {len(manifest['traces'])}"
-
-        # Oldest 2 should be gone
-        assert not (output_dir / "trace_20250101_000000.jsonl").exists()
-        assert not (output_dir / "trace_20250101_000001.jsonl").exists()
+        idx = SessionIndex(output_dir)
+        assert idx.session_count() == 3, f"Expected 3 sessions, got {idx.session_count()}"
+        remaining = {r.claw_session_id for r in idx.list_sessions(10, 0)[0]}
+        idx.close()
+        assert "e2e-cleanup-0" not in remaining
 
         print("  test_e2e_with_cleanup PASSED")
 
@@ -1876,19 +1853,30 @@ async def test_live_viewer_sse_incremental():
     import aiohttp
 
     from claude_tap import LiveViewerServer
+    from claude_tap.session_index import SessionIndex
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        trace_path = Path(tmpdir) / "test.jsonl"
-        server = LiveViewerServer(trace_path, port=0)
+        output_dir = Path(tmpdir)
+        idx = SessionIndex(output_dir)
+        server = LiveViewerServer(output_dir, idx, port=0)
         port = await server.start()
 
         try:
-            # Broadcast multiple records
+            sid = "live-inc-test"
             for i in range(5):
-                await server.broadcast({"turn": i + 1, "request_id": f"req_{i}", "request": {"method": "POST"}})
+                await server.broadcast(
+                    {
+                        "turn": i + 1,
+                        "request_id": f"req_{i}",
+                        "request": {"method": "POST"},
+                        "claw_session_id": sid,
+                    }
+                )
 
             async with aiohttp.ClientSession() as session:
-                async with session.get(f"http://127.0.0.1:{port}/records") as resp:
+                async with session.get(
+                    f"http://127.0.0.1:{port}/records?session={sid}",
+                ) as resp:
                     records = await resp.json()
                     assert len(records) == 5, f"Expected 5 records, got {len(records)}"
                     assert records[0]["turn"] == 1
@@ -1897,6 +1885,7 @@ async def test_live_viewer_sse_incremental():
 
         finally:
             await server.stop()
+            idx.close()
 
         print("  test_live_viewer_sse_incremental PASSED")
 
@@ -2130,12 +2119,9 @@ async def test_forward_proxy_connect():
 
     from claude_tap.certs import CertificateAuthority, ensure_ca
     from claude_tap.forward_proxy import ForwardProxyServer
-    from claude_tap.session_dispatcher import SessionTraceDispatcher
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
-        date_dir = tmpdir / "2099-05-01"
-        date_dir.mkdir()
         ca_dir = tmpdir / "ca"
 
         # Generate CA
@@ -2148,7 +2134,7 @@ async def test_forward_proxy_connect():
 
         # Start forward proxy (disable SSL verify for the upstream session
         # since our fake upstream uses a self-signed cert)
-        trace_dispatcher = SessionTraceDispatcher(date_dir, "120000", live_server=None)
+        trace_dispatcher = make_trace_dispatcher(tmpdir)
         upstream_ssl_ctx = ssl.create_default_context()
         upstream_ssl_ctx.check_hostname = False
         upstream_ssl_ctx.verify_mode = ssl.CERT_NONE
@@ -2188,6 +2174,7 @@ async def test_forward_proxy_connect():
                     headers={
                         "x-api-key": "sk-ant-test-key-12345678",
                         "anthropic-version": "2023-06-01",
+                        "Claw-Session-Id": "e2e-fwd-http",
                     },
                 ) as resp:
                     assert resp.status == 200, f"Expected 200, got {resp.status}"
@@ -2200,7 +2187,7 @@ async def test_forward_proxy_connect():
 
             # Check trace was recorded
             trace_dispatcher.close()
-            trace_paths = sorted(date_dir.glob("trace_*.jsonl"))
+            trace_paths = sorted(tmpdir.glob("sessions/*/trace.jsonl"))
             assert trace_paths, "No trace recorded"
             trace_text = trace_paths[0].read_text().strip()
             records = [json.loads(line) for line in trace_text.splitlines()]
@@ -2232,12 +2219,9 @@ async def test_forward_proxy_connect_websocket():
 
     from claude_tap.certs import CertificateAuthority, ensure_ca
     from claude_tap.forward_proxy import ForwardProxyServer
-    from claude_tap.session_dispatcher import SessionTraceDispatcher
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
-        date_dir = tmpdir / "2099-05-02"
-        date_dir.mkdir()
         ca_dir = tmpdir / "ca"
 
         ca_cert_path, ca_key_path = ensure_ca(ca_dir)
@@ -2246,7 +2230,7 @@ async def test_forward_proxy_connect_websocket():
         upstream_port = await _start_fake_wss_upstream(tmpdir)
         print(f"  Fake WSS upstream on port {upstream_port}")
 
-        trace_dispatcher = SessionTraceDispatcher(date_dir, "120000", live_server=None)
+        trace_dispatcher = make_trace_dispatcher(tmpdir)
         upstream_ssl_ctx = ssl.create_default_context()
         upstream_ssl_ctx.check_hostname = False
         upstream_ssl_ctx.verify_mode = ssl.CERT_NONE
@@ -2273,6 +2257,7 @@ async def test_forward_proxy_connect_websocket():
                     f"https://127.0.0.1:{upstream_port}/v1/responses",
                     proxy=proxy_url,
                     ssl=ssl_ctx,
+                    headers={"Claw-Session-Id": "e2e-fwd-ws"},
                 )
                 await ws.send_json({"model": "gpt-test", "input": "hello"})
 
@@ -2297,7 +2282,7 @@ async def test_forward_proxy_connect_websocket():
             await asyncio.sleep(0.1)
             trace_dispatcher.close()
 
-            trace_paths = sorted(date_dir.glob("trace_*.jsonl"))
+            trace_paths = sorted(tmpdir.glob("sessions/*/trace.jsonl"))
             trace_text = trace_paths[0].read_text().strip()
             assert trace_text, "No WS trace recorded"
             records = [json.loads(line) for line in trace_text.splitlines()]
@@ -2325,19 +2310,16 @@ async def test_forward_proxy_connect_websocket_honors_env_proxy(monkeypatch):
 
     from claude_tap.certs import CertificateAuthority, ensure_ca
     from claude_tap.forward_proxy import ForwardProxyServer
-    from claude_tap.session_dispatcher import SessionTraceDispatcher
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
-        date_dir = tmpdir / "2099-05-03"
-        date_dir.mkdir()
         ca_dir = tmpdir / "ca"
 
         ca_cert_path, ca_key_path = ensure_ca(ca_dir)
         ca = CertificateAuthority(ca_cert_path, ca_key_path)
 
         upstream_port = await _start_fake_wss_upstream(tmpdir)
-        trace_dispatcher = SessionTraceDispatcher(date_dir, "120000", live_server=None)
+        trace_dispatcher = make_trace_dispatcher(tmpdir)
         upstream_ssl_ctx = ssl.create_default_context()
         upstream_ssl_ctx.check_hostname = False
         upstream_ssl_ctx.verify_mode = ssl.CERT_NONE
@@ -2378,6 +2360,7 @@ async def test_forward_proxy_connect_websocket_honors_env_proxy(monkeypatch):
                     f"https://127.0.0.1:{upstream_port}/v1/responses",
                     proxy=f"http://127.0.0.1:{proxy_port}",
                     ssl=ssl_ctx,
+                    headers={"Claw-Session-Id": "e2e-fwd-ws-proxy"},
                 )
                 await ws.send_json({"model": "gpt-test", "input": "hello"})
                 while True:
@@ -2629,7 +2612,7 @@ if __name__ == "__main__":
     test_sse_reassembler()
     test_trace_cleanup()
     test_trace_tagging_safety()
-    test_manifest_migration()
+    test_cleanup_traces_empty_output_dir()
     test_live_viewer_scroll_preservation()
     test_live_viewer_diff_nav_update()
 
@@ -2658,43 +2641,49 @@ async def test_live_viewer_server():
     import aiohttp
 
     from claude_tap import LiveViewerServer
+    from claude_tap.session_index import SessionIndex
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        trace_path = Path(tmpdir) / "test.jsonl"
+        output_dir = Path(tmpdir)
+        idx = SessionIndex(output_dir)
 
         # Start server
-        server = LiveViewerServer(trace_path, port=0)
+        server = LiveViewerServer(output_dir, idx, port=0)
         port = await server.start()
         assert port > 0
         print(f"  LiveViewerServer started on port {port}")
 
-        async with aiohttp.ClientSession() as session:
-            # Test index page
-            async with session.get(f"http://127.0.0.1:{port}/") as resp:
-                assert resp.status == 200
-                html = await resp.text()
-                assert "LIVE_MODE = true" in html
-                print("  OK: index returns live mode HTML")
+        sid = "live-srv-test"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"http://127.0.0.1:{port}/") as resp:
+                    assert resp.status == 200
+                    html = await resp.text()
+                    assert "LIVE_MODE = true" in html
+                    print("  OK: index returns live mode HTML")
 
-            # Test records endpoint (empty initially)
-            async with session.get(f"http://127.0.0.1:{port}/records") as resp:
-                assert resp.status == 200
-                records = await resp.json()
-                assert records == []
-                print("  OK: /records returns empty list")
+                async with session.get(f"http://127.0.0.1:{port}/records?session={sid}") as resp:
+                    assert resp.status == 200
+                    records = await resp.json()
+                    assert records == []
+                    print("  OK: /records returns empty list")
 
-            # Broadcast a record
-            test_record = {"turn": 1, "request": {"method": "POST"}}
-            await server.broadcast(test_record)
+                test_record = {
+                    "turn": 1,
+                    "request": {"method": "POST"},
+                    "claw_session_id": sid,
+                }
+                await server.broadcast(test_record)
 
-            # Verify record is stored
-            async with session.get(f"http://127.0.0.1:{port}/records") as resp:
-                records = await resp.json()
-                assert len(records) == 1
-                assert records[0]["turn"] == 1
-                print("  OK: broadcast adds record to /records")
+                async with session.get(f"http://127.0.0.1:{port}/records?session={sid}") as resp:
+                    records = await resp.json()
+                    assert len(records) == 1
+                    assert records[0]["turn"] == 1
+                    print("  OK: broadcast adds record to /records")
 
-        await server.stop()
+        finally:
+            await server.stop()
+            idx.close()
         print("  test_live_viewer_server PASSED")
 
 

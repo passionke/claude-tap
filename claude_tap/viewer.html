@@ -1115,13 +1115,11 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); heig
     </div>
   </div>
   <div id="sidebar-wrap" style="display:none;display:flex;flex-direction:column">
-    <div id="date-picker" style="display:none;padding:6px 12px;border-bottom:1px solid var(--border);font-size:13px;align-items:center;gap:8px;flex-wrap:wrap;">
-      <label style="color:var(--text-secondary);white-space:nowrap;">Date:</label>
-      <select id="date-select" onchange="onDateChange(this.value)" style="flex:1;padding:3px 6px;border-radius:4px;border:1px solid var(--border);background:var(--bg-card);color:var(--text);font-size:13px;cursor:pointer;"></select>
-      <label id="session-filter-label" style="display:none;color:var(--text-secondary);white-space:nowrap;">Session:</label>
-      <input id="session-filter-input" type="text" style="display:none;min-width:220px;flex:1;padding:3px 6px;border-radius:4px;border:1px solid var(--border);background:var(--bg-card);color:var(--text);font-size:13px;" placeholder="claw-session-id">
-      <button id="session-filter-apply" type="button" style="display:none;padding:3px 8px;border-radius:4px;border:1px solid var(--border);background:var(--bg-card);color:var(--text);font-size:12px;cursor:pointer;" onclick="applyLiveSessionFilter()">Apply</button>
-      <button id="session-filter-clear" type="button" style="display:none;padding:3px 8px;border-radius:4px;border:1px solid var(--border);background:var(--bg-card);color:var(--text);font-size:12px;cursor:pointer;" onclick="clearLiveSessionFilter()">Clear</button>
+    <div id="session-picker" style="display:none;padding:6px 12px;border-bottom:1px solid var(--border);font-size:13px;align-items:center;gap:8px;flex-wrap:wrap;">
+      <label style="color:var(--text-secondary);white-space:nowrap;">Session:</label>
+      <select id="session-select" onchange="onSessionSelectChange(this.value)" style="flex:1;min-width:180px;padding:3px 6px;border-radius:4px;border:1px solid var(--border);background:var(--bg-card);color:var(--text);font-size:13px;cursor:pointer;"></select>
+      <button id="session-load-more" type="button" style="display:none;padding:3px 8px;border-radius:4px;border:1px solid var(--border);background:var(--bg-card);color:var(--text);font-size:12px;cursor:pointer;" onclick="loadMoreSessions()">Load more</button>
+      <span id="session-total-hint" style="font-size:11px;color:var(--text-tertiary);"></span>
     </div>
     <div class="search-bar" id="search-bar">
       <span class="search-icon">&#128269;</span>
@@ -1813,9 +1811,10 @@ let liveEventSource = null;
 let liveConnected = false;
 let currentDetailRequestId = null;
 let liveRecords = [];
-let viewingDate = null; // null = live, string = historical date
 let liveRenderTimer = null;
 const liveSeenIds = new Set();
+let sessionsListOffset = 0;
+let sessionsListTotal = 0;
 
 function getLiveSessionFilter() {
   try {
@@ -1829,14 +1828,7 @@ function getLiveSessionFilter() {
 
 function liveEventsUrl() {
   const s = getLiveSessionFilter();
-  return s ? '/events?' + new URLSearchParams({ session: s }).toString() : '/events';
-}
-
-function tracesApiUrl(dateValue) {
-  let url = '/api/traces/' + encodeURIComponent(dateValue);
-  const s = getLiveSessionFilter();
-  if (s) url += '?' + new URLSearchParams({ session: s }).toString();
-  return url;
+  return s ? '/events?' + new URLSearchParams({ session: s }).toString() : null;
 }
 
 function setLiveSessionFilter(sessionId) {
@@ -1860,74 +1852,101 @@ function refreshLiveConnection() {
   initLiveMode();
 }
 
-function applyLiveSessionFilter() {
-  const input = $('#session-filter-input');
-  if (!input) return;
-  setLiveSessionFilter(input.value);
-  refreshLiveConnection();
-  const sel = $('#date-select');
-  if (sel && sel.value && sel.value !== 'live') onDateChange(sel.value);
+async function fetchSessionsPage(reset) {
+  try {
+    if (reset) sessionsListOffset = 0;
+    const resp = await fetch(`/api/sessions?limit=100&offset=${sessionsListOffset}`);
+    const data = await resp.json();
+    if (!data.sessions) return;
+    sessionsListTotal = data.total || 0;
+    const sel = $('#session-select');
+    if (!sel) return;
+    if (reset) {
+      sel.innerHTML = '';
+      const ph = document.createElement('option');
+      ph.value = '';
+      ph.textContent = '-- Select session --';
+      sel.appendChild(ph);
+    }
+    for (const row of data.sessions) {
+      const opt = document.createElement('option');
+      opt.value = row.claw_session_id;
+      opt.textContent = row.claw_session_id;
+      sel.appendChild(opt);
+    }
+    sessionsListOffset += data.sessions.length;
+    const more = $('#session-load-more');
+    const hint = $('#session-total-hint');
+    if (more) more.style.display = sessionsListOffset < sessionsListTotal ? 'inline-flex' : 'none';
+    if (hint) hint.textContent = sessionsListTotal ? `${sessionsListOffset} / ${sessionsListTotal}` : '';
+  } catch (e) {
+    console.error('Failed to fetch sessions:', e);
+  }
 }
 
-function clearLiveSessionFilter() {
-  const input = $('#session-filter-input');
-  if (input) input.value = '';
-  setLiveSessionFilter('');
-  refreshLiveConnection();
-  const sel = $('#date-select');
-  if (sel && sel.value && sel.value !== 'live') onDateChange(sel.value);
+function loadMoreSessions() {
+  fetchSessionsPage(false);
 }
 
-function initLiveSessionFilterControls() {
-  const label = $('#session-filter-label');
-  const input = $('#session-filter-input');
-  const applyBtn = $('#session-filter-apply');
-  const clearBtn = $('#session-filter-clear');
-  if (!label || !input || !applyBtn || !clearBtn) return;
-  label.style.display = 'inline-flex';
-  input.style.display = 'inline-flex';
-  applyBtn.style.display = 'inline-flex';
-  clearBtn.style.display = 'inline-flex';
-  input.value = getLiveSessionFilter();
-  input.addEventListener('keydown', e => {
-    if (e.key === 'Enter') applyLiveSessionFilter();
-  });
+async function onSessionSelectChange(sessionId) {
+  const id = String(sessionId || '').trim();
+  setLiveSessionFilter(id);
+  liveRecords = [];
+  liveSeenIds.clear();
+  if (!id) {
+    entries = [];
+    if (liveEventSource) try { liveEventSource.close(); } catch (e) {}
+    liveEventSource = null;
+    renderApp();
+    return;
+  }
+  try {
+    const resp = await fetch('/api/sessions/traces?' + new URLSearchParams({ session: id }));
+    const data = await resp.json();
+    entries = expandWebSocketResponseEntries(data);
+    renderApp(true);
+  } catch (e) {
+    console.error('Failed to load traces for session:', e);
+  }
+  initLiveMode();
 }
 
 function initLiveMode() {
   const statusEl = $('#live-status');
   statusEl.style.display = 'flex';
+  const url = liveEventsUrl();
+  if (!url) {
+    updateLiveStatus('disconnected');
+    return;
+  }
   updateLiveStatus('connecting');
 
-  liveEventSource = new EventSource(liveEventsUrl());
+  liveEventSource = new EventSource(url);
 
   liveEventSource.onopen = () => {
     liveConnected = true;
-    updateLiveStatus('connected', liveRecords.length);
+    updateLiveStatus('connected', entries.length);
   };
 
   liveEventSource.onmessage = (event) => {
     try {
       const record = JSON.parse(event.data);
-      // Deduplicate: SSE replays full history on each reconnect
+      const filt = getLiveSessionFilter();
+      if (filt && record.claw_session_id !== filt) return;
       const id = record.request_id || record.req_id;
       if (id && liveSeenIds.has(id)) return;
       if (id) liveSeenIds.add(id);
 
       liveRecords.push(record);
-      if (!viewingDate) {
-        entries.push(...expandWebSocketResponseEntries([record]));
-        updateLiveStatus('connected', entries.length);
-        clearTimeout(liveRenderTimer);
-        liveRenderTimer = setTimeout(() => renderApp(true), 50);
-      }
+      entries.push(...expandWebSocketResponseEntries([record]));
+      updateLiveStatus('connected', entries.length);
+      clearTimeout(liveRenderTimer);
+      liveRenderTimer = setTimeout(() => renderApp(true), 50);
     } catch (e) {
       console.error('Failed to parse SSE data:', e);
     }
   };
 
-  // EventSource auto-reconnects on transient errors;
-  // only update status indicator here.
   liveEventSource.onerror = () => {
     liveConnected = false;
     updateLiveStatus('disconnected');
@@ -1950,55 +1969,33 @@ function updateLiveStatus(status, count) {
   el.innerHTML = `<span style="width:6px;height:6px;border-radius:50%;background:${c.dot};${status === 'connected' ? 'animation:pulse 2s infinite;' : ''}"></span>${labels[status]}${countText}`;
 }
 
-async function fetchDates() {
-  try {
-    const resp = await fetch('/api/dates');
-    const data = await resp.json();
-    const sel = $('#date-select');
-    if (!sel || !data.dates) return;
-    sel.innerHTML = '<option value="live">Live (current session)</option>';
-    for (const d of data.dates) {
-      sel.insertAdjacentHTML('beforeend', `<option value="${d}">${d}</option>`);
-    }
-    if (data.has_legacy) {
-      sel.insertAdjacentHTML('beforeend', '<option value="legacy">Legacy (flat)</option>');
-    }
-    const picker = $('#date-picker');
-    if (picker) picker.style.display = 'flex';
-  } catch (e) {
-    console.error('Failed to fetch dates:', e);
-  }
-}
-
-async function onDateChange(value) {
-  if (value === 'live') {
-    viewingDate = null;
-    entries = expandWebSocketResponseEntries(liveRecords.slice());
-    renderApp(true);
-    return;
-  }
-  viewingDate = value;
-  try {
-    const resp = await fetch(tracesApiUrl(value));
-    entries = expandWebSocketResponseEntries(await resp.json());
-    renderApp();
-  } catch (e) {
-    console.error('Failed to load traces for date:', value, e);
-  }
-}
-
 if (typeof LIVE_MODE !== 'undefined' && LIVE_MODE) {
   entries = typeof EMBEDDED_TRACE_DATA !== 'undefined' ? expandWebSocketResponseEntries(EMBEDDED_TRACE_DATA) : [];
   document.addEventListener('DOMContentLoaded', () => {
     initTheme(); initLang(); initGlobalSearch();
-    initLiveSessionFilterControls();
-    initLiveMode();
-    fetchDates();
+    const picker = $('#session-picker');
+    if (picker) picker.style.display = 'flex';
+    fetchSessionsPage(true).then(() => {
+      const fromUrl = getLiveSessionFilter();
+      const sel = $('#session-select');
+      if (fromUrl && sel) {
+        const has = [...sel.options].some(o => o.value === fromUrl);
+        if (!has) {
+          const opt = document.createElement('option');
+          opt.value = fromUrl;
+          opt.textContent = fromUrl + ' (URL)';
+          sel.appendChild(opt);
+        }
+        sel.value = fromUrl;
+        onSessionSelectChange(fromUrl);
+      } else {
+        initLiveMode();
+        if (!entries.length) {
+          $('#drop-zone').innerHTML = '<div style="text-align:center;padding:60px 20px;"><div style="font-size:48px;margin-bottom:16px;">📡</div><h2 style="margin-bottom:8px;">Select a session</h2><p style="color:var(--text-secondary);">Choose <strong>claw-session-id</strong> above or open with <code>?session=...</code>. Send the <code>claw-session-id</code> header on API calls to record traces.</p></div>';
+        }
+      }
+    });
     if (entries.length) renderApp();
-    else {
-      // Show waiting state
-      $('#drop-zone').innerHTML = '<div style="text-align:center;padding:60px 20px;"><div style="font-size:48px;margin-bottom:16px;">📡</div><h2 style="margin-bottom:8px;">Waiting for API calls...</h2><p style="color:var(--text-secondary);">Start using Claude Code to see traces here in real-time</p></div>';
-    }
   });
 } else if (typeof EMBEDDED_TRACE_META !== 'undefined' && EMBEDDED_TRACE_META.length) {
   // Lazy mode: build stub entries from metadata

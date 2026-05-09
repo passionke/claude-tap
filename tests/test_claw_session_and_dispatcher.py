@@ -9,16 +9,17 @@ import pytest
 
 from claude_tap.claw_session import (
     CLAW_SESSION_HEADER,
-    DEFAULT_CLAW_SESSION_ID,
     extract_claw_session_id,
     sanitize_filename_suffix,
     strip_claw_session_header,
 )
-from claude_tap.session_dispatcher import SessionTraceDispatcher
+from claude_tap.live import LiveViewerServer
+from claude_tap.session_index import SessionIndex
+from tests.conftest import make_trace_dispatcher
 
 
-def test_extract_default_when_missing():
-    assert extract_claw_session_id({}) == DEFAULT_CLAW_SESSION_ID
+def test_extract_none_when_missing():
+    assert extract_claw_session_id({}) is None
 
 
 def test_extract_and_strip_case_insensitive():
@@ -29,8 +30,8 @@ def test_extract_and_strip_case_insensitive():
     assert CLAW_SESSION_HEADER not in [k.lower() for k in fwd]
 
 
-def test_extract_blank_falls_back_to_default():
-    assert extract_claw_session_id({"claw-session-id": "  "}) == DEFAULT_CLAW_SESSION_ID
+def test_extract_blank_is_none():
+    assert extract_claw_session_id({"claw-session-id": "  "}) is None
 
 
 def test_sanitize_truncates_long_id():
@@ -42,15 +43,13 @@ def test_sanitize_truncates_long_id():
 
 @pytest.mark.asyncio
 async def test_dispatcher_splits_sessions(tmp_path: Path):
-    dd = tmp_path / "2099-07-01"
-    dd.mkdir()
-    d = SessionTraceDispatcher(dd, "143022", live_server=None)
+    d = make_trace_dispatcher(tmp_path)
     r1 = {"request_id": "a", "turn": 1}
     r2 = {"request_id": "b", "turn": 1}
     await d.write("sess-one", r1)
     await d.write("sess-two", r2)
     d.close()
-    paths = sorted(dd.glob("trace_*.jsonl"))
+    paths = sorted(tmp_path.glob("sessions/*/trace.jsonl"))
     assert len(paths) == 2
     by_session = {}
     for p in paths:
@@ -61,10 +60,8 @@ async def test_dispatcher_splits_sessions(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_live_sse_filters_by_session(tmp_path: Path):
-    from claude_tap.live import LiveViewerServer
-
-    tp = tmp_path / "anchor.jsonl"
-    srv = LiveViewerServer(tp, port=0, host="127.0.0.1", output_dir=None)
+    idx = SessionIndex(tmp_path)
+    srv = LiveViewerServer(tmp_path, idx, port=0, host="127.0.0.1")
     port = await srv.start()
     try:
         await srv.broadcast({"request_id": "1", "claw_session_id": "A"})
@@ -79,14 +76,18 @@ async def test_live_sse_filters_by_session(tmp_path: Path):
                 assert rows[0]["claw_session_id"] == "A"
     finally:
         await srv.stop()
+        idx.close()
 
 
 @pytest.mark.asyncio
 async def test_alloc_turn_per_session(tmp_path: Path):
-    dd = tmp_path / "2099-07-02"
-    dd.mkdir()
-    d = SessionTraceDispatcher(dd, "090000", live_server=None)
+    d = make_trace_dispatcher(tmp_path)
     assert await d.alloc_turn("s1") == 1
     assert await d.alloc_turn("s1") == 2
     assert await d.alloc_turn("s2") == 1
     d.close()
+
+    d2 = make_trace_dispatcher(tmp_path)
+    assert await d2.alloc_turn("s1") == 3
+    assert await d2.alloc_turn("s2") == 2
+    d2.close()

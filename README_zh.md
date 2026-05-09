@@ -118,16 +118,18 @@ claude-tap dashboard --tap-output-dir ./my-traces --tap-live-port 3000
 客户端退出后，也可以手动打开生成的查看器：
 
 ```bash
-open .traces/*/trace_*.html
+open .traces/sessions/*/trace.html
 ```
 
 也可以从已有 JSONL trace 重新生成自包含 HTML 查看器：
 
 ```bash
-claude-tap export .traces/2026-02-28/trace_141557.jsonl -o trace.html
+claude-tap export .traces/sessions/<storage-slug>/trace.jsonl -o trace.html
 # 或：
-claude-tap export .traces/2026-02-28/trace_141557.jsonl --format html
+claude-tap export .traces/sessions/<storage-slug>/trace.jsonl --format html
 ```
+
+仅当请求带有 `claw-session-id` 头时才会写入 trace。会话列表与元数据保存在同目录下的 `claude_tap_sessions.sqlite3` 中。
 
 ### 纯代理模式
 
@@ -176,9 +178,9 @@ OPENAI_BASE_URL=http://127.0.0.1:8080/v1 codex -c 'openai_base_url="http://127.0
 1. `claude-tap` 启动反向代理或 forward proxy，并启动所选客户端
 2. 支持 base URL 的客户端会指向反向代理；不支持 base URL 的客户端会通过 proxy/CA 环境变量接入
 3. SSE 和 WebSocket 流会在收到 chunk/message 时实时转发，代理开销很低
-4. 每个请求-响应对或 WebSocket 会话记录到按日期保存的 `trace_*.jsonl`
-5. 退出时生成自包含的 HTML 查看器
-6. 实时模式（可选）通过 SSE 向浏览器广播更新
+4. 带 `claw-session-id` 的请求-响应对或 WebSocket 会话会追加到 `sessions/{slug}/trace.jsonl`，并由 SQLite 索引
+5. 退出时为各 session 的 JSONL 生成自包含 HTML 查看器
+6. 实时模式（可选）通过 SSE 向浏览器广播更新；用与请求头一致的 `?session=` 选择会话
 
 **核心特性:** 🔒 常见认证 header 自动脱敏 · ⚡ 低开销流式转发 · 📦 自包含查看器 · 🔄 实时模式
 

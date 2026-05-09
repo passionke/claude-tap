@@ -9,21 +9,18 @@ from collections.abc import Mapping
 # Header clients send to route traces; stripped before forwarding upstream.
 CLAW_SESSION_HEADER = "claw-session-id"
 
-# Bucket for requests without the header (backward compatible).
-DEFAULT_CLAW_SESSION_ID = "_anonymous"
-
 _MAX_SLUG_LEN = 48
 
 
-def extract_claw_session_id(headers: Mapping[str, str]) -> str:
-    """Return the claw session id from headers, or DEFAULT_CLAW_SESSION_ID if absent or blank."""
+def extract_claw_session_id(headers: Mapping[str, str]) -> str | None:
+    """Return the claw session id from headers, or ``None`` if absent or blank (no tracing)."""
     for key, value in headers.items():
         if key.lower() == CLAW_SESSION_HEADER:
             if isinstance(value, str):
                 stripped = value.strip()
-                return stripped if stripped else DEFAULT_CLAW_SESSION_ID
-            return DEFAULT_CLAW_SESSION_ID
-    return DEFAULT_CLAW_SESSION_ID
+                return stripped if stripped else None
+            return None
+    return None
 
 
 def strip_claw_session_header(headers: dict[str, str]) -> None:
@@ -35,8 +32,6 @@ def strip_claw_session_header(headers: dict[str, str]) -> None:
 
 def sanitize_filename_suffix(raw: str) -> str:
     """Map a session id to a short filesystem-safe component (may truncate)."""
-    if raw == DEFAULT_CLAW_SESSION_ID:
-        return "anonymous"
     compact = re.sub(r"[^a-zA-Z0-9._-]+", "_", raw.strip()).strip("._-")
     if not compact:
         compact = "session"

@@ -23,7 +23,7 @@ podman-compose up --build
 
 ## Traces
 
-The compose file mounts `./traces` on the host to `/data/traces` in the container. JSONL and generated HTML viewers are written under dated subdirectories.
+The compose file mounts `./traces` on the host to `/data/traces` in the container. JSONL traces live under `sessions/<storage-slug>/trace.jsonl` (only when clients send `claw-session-id`). Session listing uses `claude_tap_sessions.sqlite3` in the same directory. Optional `trace.html` files are written next to each JSONL.
 
 ## Security
 

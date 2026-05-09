@@ -11,9 +11,6 @@ from claude_tap.certs import CertificateAuthority, ensure_ca
 from claude_tap.cli import (
     __version__,
     _cleanup_traces,
-    _load_manifest,
-    _register_trace,
-    _save_manifest,
     async_main,
     dashboard_main,
     main_entry,
@@ -24,6 +21,7 @@ from claude_tap.forward_proxy import ForwardProxyServer
 from claude_tap.live import LiveViewerServer
 from claude_tap.proxy import filter_headers
 from claude_tap.session_dispatcher import SessionTraceDispatcher
+from claude_tap.session_index import SessionIndex
 from claude_tap.sse import SSEReassembler
 from claude_tap.trace import TraceWriter
 from claude_tap.viewer import _generate_html_viewer
@@ -31,9 +29,6 @@ from claude_tap.viewer import _generate_html_viewer
 __all__ = [
     "__version__",
     "_cleanup_traces",
-    "_load_manifest",
-    "_register_trace",
-    "_save_manifest",
     "main_entry",
     "parse_args",
     "parse_dashboard_args",
@@ -43,6 +38,7 @@ __all__ = [
     "ensure_ca",
     "ForwardProxyServer",
     "SessionTraceDispatcher",
+    "SessionIndex",
     "SSEReassembler",
     "TraceWriter",
     "LiveViewerServer",

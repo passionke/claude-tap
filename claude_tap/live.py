@@ -4,31 +4,43 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
-from datetime import date
+from collections import deque
 from pathlib import Path
+from urllib.parse import unquote
 
 from aiohttp import web
 
-_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+from claude_tap.session_index import SessionIndex
+
+# Cap in-memory SSE replay per session to bound RAM (full history: use /api/sessions/traces).
+_SSE_REPLAY_MAX = 5000
 
 
 class LiveViewerServer:
     """HTTP server for real-time trace viewing via SSE."""
 
-    def __init__(self, trace_path: Path, port: int = 0, host: str = "127.0.0.1", output_dir: Path | None = None):
-        self.trace_path = trace_path
+    def __init__(
+        self,
+        output_dir: Path,
+        session_index: SessionIndex,
+        port: int = 0,
+        host: str = "127.0.0.1",
+    ):
+        self.output_dir = Path(output_dir)
+        self.session_index = session_index
         self.port = port
         self.host = host
-        self.output_dir = output_dir
-        # Each SSE subscriber optionally filters by ``claw_session_id`` (query: session=).
-        self._sse_clients: list[tuple[web.StreamResponse, str | None]] = []
-        self._records: list[dict] = []
-        self._current_date: str = date.today().isoformat()
+        self._sse_clients: list[tuple[web.StreamResponse, str]] = []
+        self._session_buffers: dict[str, deque] = {}
         self._lock = asyncio.Lock()
         self._runner: web.AppRunner | None = None
         self._actual_port: int = 0
         self._shutdown_event = asyncio.Event()
+
+    def _buffer_append(self, claw_session_id: str, record: dict) -> None:
+        if claw_session_id not in self._session_buffers:
+            self._session_buffers[claw_session_id] = deque(maxlen=_SSE_REPLAY_MAX)
+        self._session_buffers[claw_session_id].append(record)
 
     async def start(self) -> int:
         """Start the viewer server and return the actual port."""
@@ -36,8 +48,8 @@ class LiveViewerServer:
         app.router.add_get("/", self._handle_index)
         app.router.add_get("/events", self._handle_sse)
         app.router.add_get("/records", self._handle_records)
-        app.router.add_get("/api/dates", self._handle_dates)
-        app.router.add_get("/api/traces/{date}", self._handle_traces_by_date)
+        app.router.add_get("/api/sessions", self._handle_api_sessions)
+        app.router.add_get("/api/sessions/traces", self._handle_api_session_traces)
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()
@@ -65,23 +77,20 @@ class LiveViewerServer:
             await self._runner.cleanup()
 
     async def broadcast(self, record: dict) -> None:
-        """Broadcast a new record to all connected SSE clients."""
+        """Broadcast a new record to all connected SSE clients for that session."""
+        sid = record.get("claw_session_id")
+        if not sid:
+            return
+
         async with self._lock:
-            # Cross-midnight: clear in-memory records when the date changes.
-            # Previous records are already persisted in the JSONL file and
-            # accessible via the date picker.
-            today = date.today().isoformat()
-            if today != self._current_date:
-                self._records.clear()
-                self._current_date = today
-            self._records.append(record)
+            self._buffer_append(str(sid), record)
 
         data = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
         message = f"data: {data}\n\n"
 
         disconnected: list[web.StreamResponse] = []
         for client, sess_filter in self._sse_clients:
-            if sess_filter is not None and record.get("claw_session_id") != sess_filter:
+            if sess_filter != str(sid):
                 continue
             try:
                 await client.write(message.encode("utf-8"))
@@ -103,13 +112,9 @@ class LiveViewerServer:
             return web.Response(status=404, text="viewer.html not found")
 
         html = template.read_text(encoding="utf-8")
-        jsonl_path_js = json.dumps(str(self.trace_path.absolute()))
-        html_path = self.trace_path.with_suffix(".html")
-        html_path_js = json.dumps(str(html_path.absolute()))
         live_js = (
             "const LIVE_MODE = true;\nconst EMBEDDED_TRACE_DATA = [];\n"
-            f"const __TRACE_JSONL_PATH__ = {jsonl_path_js};\n"
-            f"const __TRACE_HTML_PATH__ = {html_path_js};\n"
+            'const __TRACE_JSONL_PATH__ = "";\nconst __TRACE_HTML_PATH__ = "";\n'
         )
         html = html.replace(
             "<script>\nconst $ = s =>",
@@ -118,11 +123,19 @@ class LiveViewerServer:
         )
         return web.Response(text=html, content_type="text/html")
 
-    async def _handle_sse(self, request: web.Request) -> web.StreamResponse:
-        """SSE endpoint for live trace updates."""
+    def _require_session(self, request: web.Request) -> str | None:
         qs = request.rel_url.query
-        raw_sess = qs.get("session") or qs.get("claw_session_id") or ""
-        sess_filter: str | None = raw_sess.strip() if raw_sess.strip() else None
+        raw = (qs.get("session") or qs.get("claw_session_id") or "").strip()
+        return raw if raw else None
+
+    async def _handle_sse(self, request: web.Request) -> web.StreamResponse:
+        """SSE endpoint for live trace updates (requires ``?session=``)."""
+        sess_filter = self._require_session(request)
+        if not sess_filter:
+            return web.Response(
+                status=400,
+                text="session or claw_session_id query parameter is required",
+            )
 
         resp = web.StreamResponse(
             status=200,
@@ -136,9 +149,8 @@ class LiveViewerServer:
         await resp.prepare(request)
 
         async with self._lock:
-            for record in self._records:
-                if sess_filter is not None and record.get("claw_session_id") != sess_filter:
-                    continue
+            buf = self._session_buffers.get(sess_filter, deque())
+            for record in buf:
                 data = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
                 await resp.write(f"data: {data}\n\n".encode("utf-8"))
 
@@ -164,64 +176,71 @@ class LiveViewerServer:
         return resp
 
     async def _handle_records(self, request: web.Request) -> web.Response:
-        """Return all records as JSON array."""
-        qs = request.rel_url.query
-        raw_sess = qs.get("session") or qs.get("claw_session_id") or ""
-        sess_filter: str | None = raw_sess.strip() if raw_sess.strip() else None
+        """Return in-memory records for one session (requires ``?session=``)."""
+        sess = self._require_session(request)
+        if not sess:
+            return web.Response(
+                status=400,
+                text="session or claw_session_id query parameter is required",
+            )
         async with self._lock:
-            rows = self._records
-            if sess_filter is not None:
-                rows = [r for r in self._records if r.get("claw_session_id") == sess_filter]
-            return web.json_response(rows)
+            buf = list(self._session_buffers.get(sess, ()))
+            return web.json_response(buf)
 
-    async def _handle_dates(self, request: web.Request) -> web.Response:
-        """Return available trace dates (descending)."""
-        if not self.output_dir or not self.output_dir.is_dir():
-            return web.json_response({"dates": [], "has_legacy": False})
-        dates_set: set[str] = set()
-        has_legacy = False
-        for item in sorted(self.output_dir.iterdir(), reverse=True):
-            if item.is_dir() and _DATE_RE.match(item.name):
-                if any(item.glob("trace_*.jsonl")):
-                    dates_set.add(item.name)
-            elif item.is_file() and item.name.startswith("trace_") and item.suffix == ".jsonl":
-                has_legacy = True
-        # Always include today so cross-midnight sessions are visible
-        dates_set.add(date.today().isoformat())
-        dates = sorted(dates_set, reverse=True)
-        return web.json_response({"dates": dates, "has_legacy": has_legacy})
-
-    async def _handle_traces_by_date(self, request: web.Request) -> web.Response:
-        """Return combined trace records for a given date."""
-        date = request.match_info["date"]
-        if not self.output_dir or not self.output_dir.is_dir():
-            return web.json_response([])
-
-        if date == "legacy":
-            trace_dir = self.output_dir
-            pattern = "trace_*.jsonl"
-        elif _DATE_RE.match(date):
-            trace_dir = self.output_dir / date
-            pattern = "trace_*.jsonl"
-        else:
-            return web.Response(status=400, text="Invalid date format")
-
-        if not trace_dir.is_dir():
-            return web.json_response([])
-
+    async def _handle_api_sessions(self, request: web.Request) -> web.Response:
+        """Paginated session list (``limit`` default 100, ``offset`` default 0)."""
         qs = request.rel_url.query
-        raw_sess = qs.get("session") or qs.get("claw_session_id") or ""
-        sess_filter: str | None = raw_sess.strip() if raw_sess.strip() else None
+        try:
+            limit = min(500, max(1, int(qs.get("limit", "100"))))
+        except ValueError:
+            limit = 100
+        try:
+            offset = max(0, int(qs.get("offset", "0")))
+        except ValueError:
+            offset = 0
+
+        rows, total = self.session_index.list_sessions(limit, offset)
+        sessions = [
+            {
+                "claw_session_id": r.claw_session_id,
+                "storage_slug": r.storage_slug,
+                "jsonl_relpath": r.jsonl_relpath,
+                "created_at": r.created_at,
+                "updated_at": r.updated_at,
+                "first_calendar_date": r.first_calendar_date,
+                "last_calendar_date": r.last_calendar_date,
+                "last_turn": r.last_turn,
+            }
+            for r in rows
+        ]
+        return web.json_response({"sessions": sessions, "total": total, "limit": limit, "offset": offset})
+
+    async def _handle_api_session_traces(self, request: web.Request) -> web.Response:
+        """Load JSONL records for one ``claw_session_id`` (query ``session=``)."""
+        raw_q = request.rel_url.query.get("session") or request.rel_url.query.get("claw_session_id") or ""
+        claw_session_id = unquote(raw_q.strip())
+        if not claw_session_id:
+            return web.Response(
+                status=400,
+                text="session or claw_session_id query parameter is required",
+            )
+
+        row = self.session_index.get_session(claw_session_id)
+        if not row:
+            return web.json_response([])
+
+        path = self.output_dir / row.jsonl_relpath
+        if not path.is_file():
+            return web.json_response([])
 
         records = []
-        for jsonl in sorted(trace_dir.glob(pattern)):
-            try:
-                for line in jsonl.read_text(encoding="utf-8").splitlines():
-                    line = line.strip()
-                    if line:
-                        records.append(json.loads(line))
-            except (OSError, json.JSONDecodeError):
-                continue
-        if sess_filter is not None:
-            records = [r for r in records if r.get("claw_session_id") == sess_filter]
+        try:
+            text = path.read_text(encoding="utf-8")
+            for line in text.splitlines():
+                line = line.strip()
+                if line:
+                    records.append(json.loads(line))
+        except (OSError, json.JSONDecodeError):
+            return web.json_response([])
+
         return web.json_response(records)

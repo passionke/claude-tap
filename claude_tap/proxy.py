@@ -145,10 +145,13 @@ async def proxy_handler(request: web.Request) -> web.StreamResponse:
     if isinstance(req_body, dict):
         is_streaming = req_body.get("stream", False)
 
-    turn = await trace_dispatcher.alloc_turn(raw_claw)
+    if raw_claw is not None:
+        turn = await trace_dispatcher.alloc_turn(raw_claw)
+    else:
+        turn = 0
 
     model = req_body.get("model", "") if isinstance(req_body, dict) else ""
-    log_prefix = f"[Turn {turn}]"
+    log_prefix = f"[Turn {turn}]" if raw_claw is not None else "[proxy]"
     log.info(
         f"{log_prefix} → {request.method} {request.path} (model={model}, stream={is_streaming}, upstream={upstream_url})"
     )
@@ -209,7 +212,7 @@ async def _handle_streaming(
     t0: float,
     req_body,
     trace_dispatcher: SessionTraceDispatcher,
-    raw_claw_session_id: str,
+    raw_claw_session_id: str | None,
     log_prefix: str,
     upstream_base_url: str,
 ) -> web.StreamResponse:
@@ -260,7 +263,8 @@ async def _handle_streaming(
         sse_events=reassembler.events,
         upstream_base_url=upstream_base_url,
     )
-    await trace_dispatcher.write(raw_claw_session_id, record)
+    if raw_claw_session_id is not None:
+        await trace_dispatcher.write(raw_claw_session_id, record)
 
     return resp
 
@@ -273,7 +277,7 @@ async def _handle_non_streaming(
     t0: float,
     req_body,
     trace_dispatcher: SessionTraceDispatcher,
-    raw_claw_session_id: str,
+    raw_claw_session_id: str | None,
     log_prefix: str,
     upstream_base_url: str,
 ) -> web.Response:
@@ -312,7 +316,8 @@ async def _handle_non_streaming(
         resp_body,
         upstream_base_url=upstream_base_url,
     )
-    await trace_dispatcher.write(raw_claw_session_id, record)
+    if raw_claw_session_id is not None:
+        await trace_dispatcher.write(raw_claw_session_id, record)
 
     return web.Response(
         status=upstream_resp.status,
@@ -436,8 +441,11 @@ async def _handle_websocket(request: web.Request) -> web.StreamResponse:
 
     req_id = f"req_{uuid.uuid4().hex[:12]}"
     t0 = time.monotonic()
-    turn = await trace_dispatcher.alloc_turn(raw_claw)
-    log_prefix = f"[Turn {turn}]"
+    if raw_claw is not None:
+        turn = await trace_dispatcher.alloc_turn(raw_claw)
+    else:
+        turn = 0
+    log_prefix = f"[Turn {turn}]" if raw_claw is not None else "[proxy]"
 
     # Resolve proxy from env — aiohttp ws_connect ignores trust_env
     proxy_settings = _get_ws_proxy_settings(upstream_ws_url) if session.trust_env else None
@@ -473,7 +481,8 @@ async def _handle_websocket(request: web.Request) -> web.StreamResponse:
             upstream_base_url=target,
             error=str(exc),
         )
-        await trace_dispatcher.write(raw_claw, record)
+        if raw_claw is not None:
+            await trace_dispatcher.write(raw_claw, record)
         return web.Response(status=502, text=str(exc))
 
     # Upstream connected — accept client WebSocket upgrade
@@ -551,7 +560,8 @@ async def _handle_websocket(request: web.Request) -> web.StreamResponse:
         server_messages=server_messages,
         upstream_base_url=target,
     )
-    await trace_dispatcher.write(raw_claw, record)
+    if raw_claw is not None:
+        await trace_dispatcher.write(raw_claw, record)
 
     log.info(
         f"{log_prefix} ← WS closed ({duration_ms}ms, "

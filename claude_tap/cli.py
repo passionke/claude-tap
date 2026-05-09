@@ -14,7 +14,7 @@ import threading
 import time
 import webbrowser
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 import aiohttp
@@ -26,6 +26,7 @@ from claude_tap.forward_proxy import ForwardProxyServer
 from claude_tap.live import LiveViewerServer
 from claude_tap.proxy import proxy_handler
 from claude_tap.session_dispatcher import SessionTraceDispatcher
+from claude_tap.session_index import SessionIndex
 from claude_tap.viewer import _generate_html_viewer
 
 # Force UTF-8 + line-buffered stdout/stderr so emoji output works on Windows
@@ -328,24 +329,20 @@ async def async_main(args: argparse.Namespace):
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    session_index = SessionIndex(output_dir)
     now = datetime.now()
-    date_str = now.strftime("%Y-%m-%d")
-    time_str = now.strftime("%H%M%S")
-    ts = now.strftime("%Y%m%d_%H%M%S")  # kept for manifest compatibility
-    date_dir = output_dir / date_str
-    date_dir.mkdir(parents=True, exist_ok=True)
-    log_path = date_dir / f"trace_{time_str}.log"
+    log_path = output_dir / f"proxy_{now.strftime('%Y%m%d_%H%M%S')}.log"
 
-    trace_dispatcher = SessionTraceDispatcher(date_dir, time_str, live_server=None)
+    trace_dispatcher = SessionTraceDispatcher(output_dir, session_index, live_server=None)
 
     # Start live viewer server if requested
     live_server: LiveViewerServer | None = None
     if args.live_viewer:
         live_server = LiveViewerServer(
-            trace_dispatcher.default_primary_trace_path(),
+            output_dir,
+            session_index,
             port=args.live_port,
             host=args.host,
-            output_dir=output_dir,
         )
         await live_server.start()
         trace_dispatcher.attach_live_server(live_server)
@@ -415,7 +412,7 @@ async def async_main(args: argparse.Namespace):
             actual_port = args.port
         print(f"🔍 claude-tap v{__version__} listening on http://{args.host}:{actual_port}")
 
-    print(f"📁 Trace directory: {date_dir}")
+    print(f"📁 Trace directory: {output_dir}")
 
     print("ℹ️  Self-update is disabled in this fork; ignoring update check/auto-update options.")
 
@@ -442,93 +439,88 @@ async def async_main(args: argparse.Namespace):
             except asyncio.CancelledError:
                 pass
     finally:
-        if forward_server:
-            try:
-                await asyncio.wait_for(forward_server.stop(), timeout=10)
-            except asyncio.TimeoutError:
-                log.warning("Timed out stopping forward proxy")
-            except Exception:
-                pass
-        if runner:
-            try:
-                await runner.cleanup()
-            except Exception:
-                pass
-
-        # Stop live viewer server if running
-        if live_server:
-            try:
-                await live_server.stop()
-            except Exception:
-                pass
         try:
-            await asyncio.wait_for(session.close(), timeout=5)
-        except asyncio.TimeoutError:
-            log.warning("Timed out closing upstream HTTP session")
-        except Exception:
-            pass
+            if forward_server:
+                try:
+                    await asyncio.wait_for(forward_server.stop(), timeout=10)
+                except asyncio.TimeoutError:
+                    log.warning("Timed out stopping forward proxy")
+                except Exception:
+                    pass
+            if runner:
+                try:
+                    await runner.cleanup()
+                except Exception:
+                    pass
 
-        if args.client == "cursor" and not args.no_launch:
-            imported = await import_cursor_transcripts(trace_dispatcher, since=client_started_at)
-            if imported:
-                print(f"   Cursor transcript turns: {imported}")
+            # Stop live viewer server if running
+            if live_server:
+                try:
+                    await live_server.stop()
+                except Exception:
+                    pass
+            try:
+                await asyncio.wait_for(session.close(), timeout=5)
+            except asyncio.TimeoutError:
+                log.warning("Timed out closing upstream HTTP session")
+            except Exception:
+                pass
 
-        # Close trace writers before generating HTML
-        trace_dispatcher.close()
+            if args.client == "cursor" and not args.no_launch:
+                imported = await import_cursor_transcripts(trace_dispatcher, since=client_started_at)
+                if imported:
+                    print(f"   Cursor transcript turns: {imported}")
 
-        # Generate self-contained HTML viewer (one file per session JSONL)
-        session_paths = trace_dispatcher.iter_session_paths()
-        html_paths: list[Path] = []
-        for jsonl_path in session_paths:
-            html_p = jsonl_path.with_suffix(".html")
-            _generate_html_viewer(jsonl_path, html_p)
-            html_paths.append(html_p)
+            # Close trace writers before generating HTML
+            trace_dispatcher.close()
 
-        # Register trace and cleanup old ones
-        trace_files: list[str] = [_rel_posix(log_path, output_dir)]
-        for jsonl_path in session_paths:
-            trace_files.append(_rel_posix(jsonl_path, output_dir))
-            hp = jsonl_path.with_suffix(".html")
-            if hp.exists():
-                trace_files.append(_rel_posix(hp, output_dir))
-        _register_trace(output_dir, ts, trace_files)
-        if args.max_traces > 0:
-            cleaned = _cleanup_traces(output_dir, args.max_traces)
-            if cleaned:
-                print(f"\n🧹 Cleaned up {cleaned} old trace(s)")
+            # Generate self-contained HTML viewer (one file per session JSONL)
+            session_paths = trace_dispatcher.iter_session_paths()
+            html_paths: list[Path] = []
+            for jsonl_path in session_paths:
+                html_p = jsonl_path.with_suffix(".html")
+                _generate_html_viewer(jsonl_path, html_p)
+                html_paths.append(html_p)
 
-        # Print summary with cost estimation
-        stats = trace_dispatcher.get_summary()
-        print("\n📊 Trace summary:")
-        print(f"   API calls: {stats['api_calls']}")
+            if args.max_traces > 0:
+                cleaned = _cleanup_traces_session_index(session_index, args.max_traces)
+                if cleaned:
+                    print(f"\n🧹 Cleaned up {cleaned} old session(s)")
 
-        # Token breakdown
-        total_tokens = stats["input_tokens"] + stats["output_tokens"]
-        if total_tokens > 0:
-            print(f"   Tokens: {stats['input_tokens']:,} in / {stats['output_tokens']:,} out", end="")
-            if stats["cache_read_tokens"] > 0:
-                print(f" / {stats['cache_read_tokens']:,} cache_read", end="")
-            if stats["cache_create_tokens"] > 0:
-                print(f" / {stats['cache_create_tokens']:,} cache_write", end="")
-            print()
+            # Print summary with cost estimation
+            stats = trace_dispatcher.get_summary()
+            print("\n📊 Trace summary:")
+            print(f"   API calls: {stats['api_calls']}")
 
-        # Output files
-        if session_paths:
-            print(f"   Log: {log_path}")
-            for jp in session_paths:
-                print(f"   Trace: {jp}")
-                hv = jp.with_suffix(".html")
-                if hv.exists():
-                    print(f"   View:  {hv}")
-        else:
-            print(f"   Log: {log_path}")
-            print("   (no session traces recorded)")
+            # Token breakdown
+            total_tokens = stats["input_tokens"] + stats["output_tokens"]
+            if total_tokens > 0:
+                print(f"   Tokens: {stats['input_tokens']:,} in / {stats['output_tokens']:,} out", end="")
+                if stats["cache_read_tokens"] > 0:
+                    print(f" / {stats['cache_read_tokens']:,} cache_read", end="")
+                if stats["cache_create_tokens"] > 0:
+                    print(f" / {stats['cache_create_tokens']:,} cache_write", end="")
+                print()
 
-        # Open viewer in browser (default: auto-open unless --tap-no-open)
-        primary_html = html_paths[0] if html_paths else None
-        if args.open_viewer and primary_html and primary_html.exists():
-            print("\n🌐 Opening viewer in browser...")
-            _open_browser(primary_html.absolute().as_uri())
+            # Output files
+            if session_paths:
+                print(f"   Log: {log_path}")
+                for jp in session_paths:
+                    print(f"   Trace: {jp}")
+                    hv = jp.with_suffix(".html")
+                    if hv.exists():
+                        print(f"   View:  {hv}")
+            else:
+                print(f"   Log: {log_path}")
+                print("   (no session traces recorded)")
+
+            # Open viewer in browser (default: auto-open unless --tap-no-open)
+            primary_html = html_paths[0] if html_paths else None
+            if args.open_viewer and primary_html and primary_html.exists():
+                print("\n🌐 Opening viewer in browser...")
+                _open_browser(primary_html.absolute().as_uri())
+        finally:
+            session_index.close()
 
     return exit_code
 
@@ -765,12 +757,8 @@ async def dashboard_main(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    now = datetime.now()
-    date_dir = output_dir / now.strftime("%Y-%m-%d")
-    date_dir.mkdir(parents=True, exist_ok=True)
-    trace_path = date_dir / f"dashboard_{now.strftime('%H%M%S')}.jsonl"
-
-    server = LiveViewerServer(trace_path, port=args.live_port, host=args.host, output_dir=output_dir)
+    session_index = SessionIndex(output_dir)
+    server = LiveViewerServer(output_dir, session_index, port=args.live_port, host=args.host)
     await server.start()
     print(f"🌐 claude-tap dashboard: {server.url}")
     print(f"📁 Trace directory: {output_dir}")
@@ -785,119 +773,37 @@ async def dashboard_main(args: argparse.Namespace) -> int:
         pass
     finally:
         await server.stop()
+        session_index.close()
     return 0
 
 
 # ---------------------------------------------------------------------------
-# Trace cleanup – manifest-based
+# Trace cleanup – SQLite session index
 # ---------------------------------------------------------------------------
-
-_MANIFEST_FILE = ".cloudtap-manifest.json"
 
 
 def _rel_posix(path: Path, base: Path) -> str:
-    # Forward slashes so manifests stay portable when `.traces` is synced across OSes.
+    # Forward slashes so paths stay portable when `.traces` is synced across OSes.
     return path.relative_to(base).as_posix()
 
 
-def _load_manifest(output_dir: Path) -> dict:
-    """Load or create the manifest file."""
-    manifest_path = output_dir / _MANIFEST_FILE
-    if manifest_path.exists():
-        try:
-            data = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if data.get("_cloudtap"):
-                return data
-        except (json.JSONDecodeError, OSError):
-            pass
-    manifest = {"_cloudtap": True, "version": __version__, "traces": []}
-    _maybe_migrate_existing(output_dir, manifest)
-    _save_manifest(output_dir, manifest)
-    return manifest
-
-
-def _save_manifest(output_dir: Path, manifest: dict) -> None:
-    """Save manifest to disk."""
-    manifest_path = output_dir / _MANIFEST_FILE
-    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-
-
-def _register_trace(output_dir: Path, ts: str, trace_files: list[str]) -> dict:
-    """Register a new trace session in the manifest."""
-    manifest = _load_manifest(output_dir)
-    entry = {
-        "timestamp": ts,
-        "files": trace_files,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    manifest["traces"].append(entry)
-    _save_manifest(output_dir, manifest)
-    return manifest
+def _cleanup_traces_session_index(session_index: SessionIndex, max_traces: int) -> int:
+    """Remove oldest sessions (by ``updated_at``) until at most ``max_traces`` remain."""
+    if max_traces <= 0:
+        return 0
+    n = session_index.session_count()
+    if n <= max_traces:
+        return 0
+    return session_index.delete_oldest_sessions(n - max_traces)
 
 
 def _cleanup_traces(output_dir: Path, max_traces: int) -> int:
-    """Remove oldest traces exceeding max_traces. Returns count of deleted sessions."""
-    if max_traces <= 0:
-        return 0
-    manifest = _load_manifest(output_dir)
-    traces = manifest.get("traces", [])
-    if len(traces) <= max_traces:
-        return 0
-    traces.sort(key=lambda t: t.get("timestamp", ""))
-    to_remove = traces[: len(traces) - max_traces]
-    removed = 0
-    for entry in to_remove:
-        parents_to_check: set[Path] = set()
-        for fname in entry.get("files", []):
-            fpath = output_dir / fname
-            if fpath.exists():
-                parents_to_check.add(fpath.parent)
-                try:
-                    fpath.unlink()
-                except OSError:
-                    pass
-        # Remove empty date subdirectories
-        for parent in parents_to_check:
-            if parent != output_dir and parent.is_dir() and not any(parent.iterdir()):
-                try:
-                    parent.rmdir()
-                except OSError:
-                    pass
-        traces.remove(entry)
-        removed += 1
-    manifest["traces"] = traces
-    _save_manifest(output_dir, manifest)
-    return removed
-
-
-def _maybe_migrate_existing(output_dir: Path, manifest: dict) -> None:
-    """Auto-register existing trace_*.jsonl files that are not yet in the manifest."""
-    # Normalize separators so manifests written by older Windows builds (with `\`) still match.
-    known_files: set[str] = {
-        f.replace("\\", "/") for entry in manifest.get("traces", []) for f in entry.get("files", [])
-    }
-
-    for jsonl in sorted(output_dir.glob("**/trace_*.jsonl")):
-        rel = _rel_posix(jsonl, output_dir)
-        if rel in known_files or jsonl.name in known_files:
-            continue
-        stem = jsonl.stem
-        ts = stem.replace("trace_", "", 1)
-        # Prefix with date dir if present
-        if jsonl.parent != output_dir:
-            ts = jsonl.parent.name.replace("-", "") + "_" + ts
-        files = [rel]
-        for suffix in [".log", ".html"]:
-            companion = jsonl.with_suffix(suffix)
-            if companion.exists():
-                files.append(_rel_posix(companion, output_dir))
-        manifest["traces"].append(
-            {
-                "timestamp": ts,
-                "files": files,
-                "created_at": datetime.fromtimestamp(jsonl.stat().st_mtime, tz=timezone.utc).isoformat(),
-            }
-        )
+    """Remove oldest sessions until at most ``max_traces`` remain. Returns deleted count."""
+    idx = SessionIndex(output_dir)
+    try:
+        return _cleanup_traces_session_index(idx, max_traces)
+    finally:
+        idx.close()
 
 
 def main_entry() -> None:

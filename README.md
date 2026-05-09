@@ -120,16 +120,18 @@ claude-tap dashboard --tap-output-dir ./my-traces --tap-live-port 3000
 When the client exits, you can also manually open the generated viewer:
 
 ```bash
-open .traces/*/trace_*.html
+open .traces/sessions/*/trace.html
 ```
 
 You can also regenerate a self-contained HTML viewer from an existing JSONL trace:
 
 ```bash
-claude-tap export .traces/2026-02-28/trace_141557.jsonl -o trace.html
+claude-tap export .traces/sessions/<storage-slug>/trace.jsonl -o trace.html
 # or:
-claude-tap export .traces/2026-02-28/trace_141557.jsonl --format html
+claude-tap export .traces/sessions/<storage-slug>/trace.jsonl --format html
 ```
+
+Traces are only recorded when requests include a `claw-session-id` header. Session metadata and listing use `claude_tap_sessions.sqlite3` next to the trace files.
 
 ### Proxy-Only Mode
 
@@ -178,9 +180,9 @@ The viewer is a single self-contained HTML file (zero external dependencies):
 1. `claude-tap` starts a reverse or forward proxy and spawns the selected client
 2. Base URL clients are pointed at the reverse proxy; clients without base URL support use proxy/CA environment variables
 3. SSE and WebSocket streams are forwarded as chunks/messages arrive with low proxy overhead
-4. Each request-response pair or WebSocket session is recorded to a dated `trace_*.jsonl`
-5. On exit, a self-contained HTML viewer is generated
-6. Live mode (optional) broadcasts updates to browser via SSE
+4. Each request-response pair or WebSocket session (with `claw-session-id`) is appended to `sessions/{slug}/trace.jsonl`, indexed in SQLite
+5. On exit, a self-contained HTML viewer is generated per session trace file
+6. Live mode (optional) broadcasts updates to the browser via SSE; pick a session with `?session=` matching the header value
 
 **Key features:** 🔒 Common auth headers auto-redacted · ⚡ Low-overhead streaming · 📦 Self-contained viewer · 🔄 Real-time live mode
 
