@@ -1812,7 +1812,63 @@ let liveConnected = false;
 let currentDetailRequestId = null;
 let liveRecords = [];
 let liveRenderTimer = null;
+let livePollTimer = null;
 const liveSeenIds = new Set();
+
+function recordDedupeKey(r) {
+  if (!r || typeof r !== 'object') return '';
+  const id = r.request_id || r.req_id;
+  if (id) return String(id);
+  if (r.turn != null && r.turn !== '') return 'turn:' + r.turn;
+  return '';
+}
+
+function seedSeenFromRawRecords(data) {
+  for (const r of data || []) {
+    const k = recordDedupeKey(r);
+    if (k) liveSeenIds.add(k);
+  }
+}
+
+function stopLivePoll() {
+  if (livePollTimer) {
+    clearInterval(livePollTimer);
+    livePollTimer = null;
+  }
+}
+
+function startLivePoll() {
+  if (typeof LIVE_MODE === 'undefined' || !LIVE_MODE) return;
+  stopLivePoll();
+  if (!getLiveSessionFilter()) return;
+  livePollTimer = setInterval(() => { pollSessionTraces(); }, 2500);
+}
+
+async function pollSessionTraces() {
+  if (typeof LIVE_MODE === 'undefined' || !LIVE_MODE) return;
+  const filt = getLiveSessionFilter();
+  if (!filt) return;
+  try {
+    const resp = await fetch('/api/sessions/traces?' + new URLSearchParams({ session: filt }));
+    const data = await resp.json();
+    if (!Array.isArray(data)) return;
+    const newRaw = [];
+    for (const r of data) {
+      const key = recordDedupeKey(r);
+      if (!key || liveSeenIds.has(key)) continue;
+      liveSeenIds.add(key);
+      newRaw.push(r);
+    }
+    if (newRaw.length === 0) return;
+    liveRecords.push(...newRaw);
+    entries.push(...expandWebSocketResponseEntries(newRaw));
+    updateLiveStatus('connected', entries.length);
+    clearTimeout(liveRenderTimer);
+    liveRenderTimer = setTimeout(() => renderApp(true), 50);
+  } catch (e) {
+    console.warn('Live poll failed:', e);
+  }
+}
 let sessionsListOffset = 0;
 let sessionsListTotal = 0;
 
@@ -1844,12 +1900,14 @@ function setLiveSessionFilter(sessionId) {
 
 function refreshLiveConnection() {
   if (typeof LIVE_MODE === 'undefined' || !LIVE_MODE) return;
+  stopLivePoll();
   if (liveEventSource) {
     try { liveEventSource.close(); } catch (e) {}
   }
   liveSeenIds.clear();
   liveRecords = [];
   initLiveMode();
+  if (getLiveSessionFilter()) startLivePoll();
 }
 
 async function fetchSessionsPage(reset) {
@@ -1894,6 +1952,7 @@ async function onSessionSelectChange(sessionId) {
   liveRecords = [];
   liveSeenIds.clear();
   if (!id) {
+    stopLivePoll();
     entries = [];
     if (liveEventSource) try { liveEventSource.close(); } catch (e) {}
     liveEventSource = null;
@@ -1904,11 +1963,13 @@ async function onSessionSelectChange(sessionId) {
     const resp = await fetch('/api/sessions/traces?' + new URLSearchParams({ session: id }));
     const data = await resp.json();
     entries = expandWebSocketResponseEntries(data);
+    seedSeenFromRawRecords(data);
     renderApp(true);
   } catch (e) {
     console.error('Failed to load traces for session:', e);
   }
   initLiveMode();
+  startLivePoll();
 }
 
 function initLiveMode() {
@@ -1932,10 +1993,10 @@ function initLiveMode() {
     try {
       const record = JSON.parse(event.data);
       const filt = getLiveSessionFilter();
-      if (filt && record.claw_session_id !== filt) return;
-      const id = record.request_id || record.req_id;
-      if (id && liveSeenIds.has(id)) return;
-      if (id) liveSeenIds.add(id);
+      if (filt && record.claw_session_id && record.claw_session_id !== filt) return;
+      const dk = recordDedupeKey(record);
+      if (dk && liveSeenIds.has(dk)) return;
+      if (dk) liveSeenIds.add(dk);
 
       liveRecords.push(record);
       entries.push(...expandWebSocketResponseEntries([record]));
