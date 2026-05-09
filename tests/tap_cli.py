@@ -1,5 +1,12 @@
 """Shared argv builders for ``python -m claude_tap`` subprocess tests.
 
+**Use the repo's tap:** spawn with :func:`claude_tap_argv` (or at minimum
+``sys.executable`` + ``-m claude_tap``), never a bare ``claude-tap`` on ``PATH``
+unless you know it is this checkout. Run tests as ``uv run pytest ...`` after
+``uv sync --extra dev`` so the active interpreter matches the working tree;
+``tests/conftest.py`` aborts early if ``import claude_tap`` is not the repo's
+``claude_tap/__init__.py``.
+
 Subprocess tests typically write under ``tempfile.mkdtemp`` and call ``rmtree``
 in ``finally``. The CLI defaults to auto-opening the HTML viewer in a
 background thread, which can race deletion — so all test spawns should include
