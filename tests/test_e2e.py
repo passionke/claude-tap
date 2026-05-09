@@ -24,6 +24,7 @@ import pytest
 from yarl import URL
 
 from tests.conftest import make_trace_dispatcher
+from tests.tap_cli import claude_tap_argv
 
 FAKE_UPSTREAM_PORT = 19199
 
@@ -246,16 +247,12 @@ def _run_test(upstream_port):
 
     try:
         proc = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "claude_tap",
+            claude_tap_argv(
                 "--tap-output-dir",
                 trace_dir,
-                "--tap-no-open",
                 "--tap-target",
                 f"http://127.0.0.1:{upstream_port}",
-            ],
+            ),
             cwd=str(project_dir),
             env=env,
             capture_output=True,
@@ -422,15 +419,12 @@ def _run_claude_tap(project_dir, trace_dir, fake_bin_dir, upstream_port, timeout
     env = os.environ.copy()
     env["PATH"] = fake_bin_dir + ":" + env.get("PATH", "")
 
-    cmd = [
-        sys.executable,
-        "-m",
-        "claude_tap",
+    cmd = claude_tap_argv(
         "--tap-output-dir",
         trace_dir,
         "--tap-target",
         f"http://127.0.0.1:{upstream_port}",
-    ]
+    )
     if tap_client != "claude":
         cmd.extend(["--tap-client", tap_client])
 
@@ -1098,7 +1092,7 @@ def _cmd_dev():
     proxy_env = os.environ.copy()
     proxy_env["PYTHONUNBUFFERED"] = "1"
     proxy_proc = sp.Popen(
-        [sys.executable, "-u", "-m", "claude_tap", "--tap-output-dir", str(traces_dir), "--tap-no-launch"],
+        claude_tap_argv("--tap-output-dir", str(traces_dir), "--tap-no-launch", unbuffered=True),
         cwd=str(project_dir),
         env=proxy_env,
         stdout=sp.PIPE,
@@ -1554,16 +1548,12 @@ def test_upstream_unreachable():
 
     try:
         proc = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "claude_tap",
+            claude_tap_argv(
                 "--tap-output-dir",
                 trace_dir,
-                "--tap-no-open",
                 "--tap-target",
                 f"http://127.0.0.1:{FAKE_UPSTREAM_UNREACHABLE_PORT}",
-            ],
+            ),
             cwd=str(project_dir),
             env=env,
             capture_output=True,
@@ -1626,16 +1616,7 @@ def test_self_update_disabled_message():
         env = os.environ.copy()
         env["PATH"] = fake_bin_dir + ":" + env.get("PATH", "")
         proc = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "claude_tap",
-                "--tap-output-dir",
-                trace_dir,
-                "--tap-no-open",
-                "--tap-target",
-                "http://127.0.0.1:1",
-            ],
+            claude_tap_argv("--tap-output-dir", trace_dir, "--tap-target", "http://127.0.0.1:1"),
             cwd=str(project_dir),
             env=env,
             capture_output=True,
@@ -1764,19 +1745,15 @@ def test_e2e_with_cleanup():
         env["CLAUDE_TAP_PYPI_URL"] = "http://127.0.0.1:1/invalid"  # disable update check
 
         proc = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "claude_tap",
+            claude_tap_argv(
                 "--tap-output-dir",
                 trace_dir,
-                "--tap-no-open",
                 "--tap-target",
                 f"http://127.0.0.1:{upstream_port}",
                 "--tap-max-traces",
                 "3",
                 "--tap-no-update-check",
-            ],
+            ),
             cwd=str(project_dir),
             env=env,
             capture_output=True,

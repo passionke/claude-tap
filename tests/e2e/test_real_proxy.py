@@ -13,10 +13,11 @@ Prerequisites:
 
 import json
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
+
+from tests.tap_cli import claude_tap_argv
 
 
 def _run_claude_tap(
@@ -28,10 +29,7 @@ def _run_claude_tap(
     timeout: float = 120,
 ) -> subprocess.CompletedProcess:
     """Run claude-tap wrapping `claude -p <prompt>` with the selected mode."""
-    cmd = [
-        sys.executable,
-        "-m",
-        "claude_tap",
+    cmd = claude_tap_argv(
         "--tap-output-dir",
         trace_dir,
         "--tap-no-update-check",
@@ -40,7 +38,7 @@ def _run_claude_tap(
         "--",  # separator: everything after goes to claude
         "-p",
         prompt,
-    ]
+    )
     if extra_claude_args:
         cmd.extend(extra_claude_args)
 
