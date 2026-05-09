@@ -285,6 +285,16 @@ def _generate_html_viewer(trace_path: Path, html_path: Path) -> None:
     if not template.exists():
         return
 
+    def _main_script_inject_needle(html_text: str) -> str:
+        """Match the opening of viewer.html's first application script block."""
+        marked = "<script>\n/* CLAUDETAP_LIVE_CONFIG */\nconst $ = s =>"
+        if marked in html_text:
+            return marked
+        legacy = "<script>\nconst $ = s =>"
+        if legacy in html_text:
+            return legacy
+        raise ValueError("viewer.html: missing main script injection anchor")
+
     # Read JSONL records
     records: list[str] = []
     if trace_path.exists():
@@ -328,12 +338,13 @@ def _generate_html_viewer(trace_path: Path, html_path: Path) -> None:
         )
 
         html = template.read_text(encoding="utf-8")
+        needle = _main_script_inject_needle(html)
         # Inject data script + raw JSONL block before the main <script> tag
         html = html.replace(
-            "<script>\nconst $ = s =>",
+            needle,
             f"<script>\n{data_js}</script>\n"
             f'<script type="text/plain" id="trace-raw">\n{raw_lines}\n</script>\n'
-            "<script>\nconst $ = s =>",
+            + needle,
             1,
         )
     else:
@@ -346,9 +357,10 @@ def _generate_html_viewer(trace_path: Path, html_path: Path) -> None:
         )
 
         html = template.read_text(encoding="utf-8")
+        needle = _main_script_inject_needle(html)
         html = html.replace(
-            "<script>\nconst $ = s =>",
-            f"<script>\n{data_js}</script>\n<script>\nconst $ = s =>",
+            needle,
+            f"<script>\n{data_js}</script>\n" + needle,
             1,
         )
 

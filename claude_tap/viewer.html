@@ -1072,6 +1072,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); heig
   <div class="divider"></div>
   <div class="path-filter" id="path-filter" style="display:none"></div>
   <div class="stats" id="stats" style="display:none">
+    <button id="session-export-full" type="button" style="padding:4px 10px;border-radius:12px;border:1px solid var(--border);background:var(--bg-card);color:var(--text-secondary);font-size:12px;cursor:pointer;display:none;" onclick="exportSessionFullJson()">Export JSON</button>
     <div class="stat-group"><span id="label-turns">Turns</span> <span class="stat-val" id="stat-turns">0</span></div>
     <div class="stat-group"><span id="label-tokens">Tokens</span> <span class="stat-val" id="stat-tokens">0</span></div>
     <div class="stat-group" id="stat-input-group" style="display:none"><span style="color:var(--blue)">&#9679;</span><span>In</span> <span class="stat-val" id="stat-input">0</span></div>
@@ -1814,6 +1815,8 @@ let currentDetailRequestId = null;
 let liveRecords = [];
 let liveRenderTimer = null;
 let livePollTimer = null;
+const LIVE_USE_SSE = false; // Keep SSE code in place but temporarily disable frontend usage.
+let liveLastTurn = 0;
 const liveSeenIds = new Set();
 
 function recordDedupeKey(r) {
@@ -1838,12 +1841,21 @@ function stopLivePoll() {
   }
 }
 
+function maxTurnFromRecords(data) {
+  let m = 0;
+  for (const r of data || []) {
+    const t = Number(r?.turn || 0);
+    if (Number.isFinite(t) && t > m) m = t;
+  }
+  return m;
+}
+
 function startLivePoll() {
   if (typeof LIVE_MODE === 'undefined' || !LIVE_MODE) return;
   stopLivePoll();
   if (!getLiveSessionFilter()) return;
   void pollSessionTraces();
-  livePollTimer = setInterval(() => { pollSessionTraces(); }, 1200);
+  livePollTimer = setInterval(() => { pollSessionTraces(); }, 2000);
 }
 
 async function pollSessionTraces() {
@@ -1851,7 +1863,10 @@ async function pollSessionTraces() {
   const filt = getLiveSessionFilter();
   if (!filt) return;
   try {
-    const resp = await fetch('/api/sessions/traces?' + new URLSearchParams({ session: filt }));
+    const resp = await fetch('/api/sessions/traces?' + new URLSearchParams({
+      session: filt,
+      since_turn: String(liveLastTurn || 0),
+    }));
     const data = await resp.json();
     if (!Array.isArray(data)) return;
     const newRaw = [];
@@ -1864,6 +1879,7 @@ async function pollSessionTraces() {
     if (newRaw.length > 0) {
       liveRecords.push(...newRaw);
       entries.push(...expandWebSocketResponseEntries(newRaw));
+      liveLastTurn = Math.max(liveLastTurn, maxTurnFromRecords(newRaw));
       clearTimeout(liveRenderTimer);
       liveRenderTimer = setTimeout(() => renderApp(true), 50);
     }
@@ -1909,9 +1925,11 @@ function refreshLiveConnection() {
   if (liveEventSource) {
     try { liveEventSource.close(); } catch (e) {}
   }
+  liveLastTurn = maxTurnFromRecords(entries);
   liveSeenIds.clear();
   liveRecords = [];
-  initLiveMode();
+  if (LIVE_USE_SSE) initLiveMode();
+  else updateLiveStatus('sync', entries.length);
   if (getLiveSessionFilter()) startLivePoll();
 }
 
@@ -1951,9 +1969,49 @@ function loadMoreSessions() {
   fetchSessionsPage(false);
 }
 
+async function exportSessionFullJson() {
+  const sid = getLiveSessionFilter();
+  if (!sid) {
+    alert('Select a session first.');
+    return;
+  }
+  const btn = $('#session-export-full');
+  const prev = btn ? btn.textContent : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Exporting...';
+  }
+  try {
+    const resp = await fetch('/api/sessions/full?' + new URLSearchParams({ session: sid }));
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    const pretty = JSON.stringify(data, null, 2);
+    const blob = new Blob([pretty], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const safeSid = String(sid).replace(/[^a-zA-Z0-9._-]+/g, '_');
+    a.href = url;
+    a.download = `session_${safeSid}_clean.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    console.error('Export clean JSON failed:', e);
+    alert('Export failed. Check console/network.');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = prev || 'Export JSON';
+    }
+  }
+}
+
 async function onSessionSelectChange(sessionId) {
   const id = String(sessionId || '').trim();
+  const exportBtn = $('#session-export-full');
   setLiveSessionFilter(id);
+  liveLastTurn = 0;
   liveRecords = [];
   liveSeenIds.clear();
   if (liveEventSource) {
@@ -1961,21 +2019,28 @@ async function onSessionSelectChange(sessionId) {
     liveEventSource = null;
   }
   if (!id) {
+    if (exportBtn) exportBtn.style.display = 'none';
     stopLivePoll();
     entries = [];
     renderApp();
     return;
   }
+  if (exportBtn) exportBtn.style.display = 'inline-flex';
   try {
-    const resp = await fetch('/api/sessions/traces?' + new URLSearchParams({ session: id }));
+    const resp = await fetch('/api/sessions/traces?' + new URLSearchParams({
+      session: id,
+      since_turn: '0',
+    }));
     const data = await resp.json();
     entries = expandWebSocketResponseEntries(data);
+    liveLastTurn = maxTurnFromRecords(data);
     seedSeenFromRawRecords(data);
     renderApp(true);
   } catch (e) {
     console.error('Failed to load traces for session:', e);
   }
-  initLiveMode();
+  if (LIVE_USE_SSE) initLiveMode();
+  else updateLiveStatus('sync', entries.length);
   startLivePoll();
 }
 
@@ -2068,7 +2133,8 @@ if (typeof LIVE_MODE !== 'undefined' && LIVE_MODE) {
         sel.value = fromUrl;
         onSessionSelectChange(fromUrl);
       } else {
-        initLiveMode();
+        if (LIVE_USE_SSE) initLiveMode();
+        else updateLiveStatus('sync', entries.length);
         if (!entries.length) {
           $('#drop-zone').innerHTML = '<div style="text-align:center;padding:60px 20px;"><div style="font-size:48px;margin-bottom:16px;">📡</div><h2 style="margin-bottom:8px;">Select a session</h2><p style="color:var(--text-secondary);">Choose <strong>claw-session-id</strong> above or open with <code>?session=...</code>. Send the <code>claw-session-id</code> header on API calls to record traces.</p></div>';
         }

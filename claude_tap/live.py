@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 from collections import deque
 from pathlib import Path
@@ -50,6 +51,7 @@ class LiveViewerServer:
         app.router.add_get("/records", self._handle_records)
         app.router.add_get("/api/sessions", self._handle_api_sessions)
         app.router.add_get("/api/sessions/traces", self._handle_api_session_traces)
+        app.router.add_get("/api/sessions/full", self._handle_api_session_full)
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()
@@ -223,7 +225,10 @@ class LiveViewerServer:
         return web.json_response({"sessions": sessions, "total": total, "limit": limit, "offset": offset})
 
     async def _handle_api_session_traces(self, request: web.Request) -> web.Response:
-        """Load JSONL records for one ``claw_session_id`` (query ``session=``)."""
+        """Load JSONL records for one ``claw_session_id`` (query ``session=``).
+
+        Supports incremental polling via ``since_turn`` (exclusive).
+        """
         raw_q = request.rel_url.query.get("session") or request.rel_url.query.get("claw_session_id") or ""
         claw_session_id = unquote(raw_q.strip())
         if not claw_session_id:
@@ -231,23 +236,73 @@ class LiveViewerServer:
                 status=400,
                 text="session or claw_session_id query parameter is required",
             )
+        try:
+            since_turn = int(request.rel_url.query.get("since_turn", "0"))
+        except ValueError:
+            since_turn = 0
+        if since_turn < 0:
+            since_turn = 0
 
+        return web.json_response(self._load_session_records(claw_session_id, since_turn=since_turn))
+
+    async def _handle_api_session_full(self, request: web.Request) -> web.Response:
+        """Load full records for one session while stripping stream event noise."""
+        raw_q = request.rel_url.query.get("session") or request.rel_url.query.get("claw_session_id") or ""
+        claw_session_id = unquote(raw_q.strip())
+        if not claw_session_id:
+            return web.Response(
+                status=400,
+                text="session or claw_session_id query parameter is required",
+            )
+        try:
+            since_turn = int(request.rel_url.query.get("since_turn", "0"))
+        except ValueError:
+            since_turn = 0
+        if since_turn < 0:
+            since_turn = 0
+
+        raw_records = self._load_session_records(claw_session_id, since_turn=since_turn)
+        filtered: list[dict] = []
+        for rec in raw_records:
+            if not isinstance(rec, dict):
+                continue
+            clean = copy.deepcopy(rec)
+            response = clean.get("response")
+            if isinstance(response, dict):
+                response.pop("sse_events", None)
+                response.pop("ws_events", None)
+            filtered.append(clean)
+        return web.json_response(filtered)
+
+    def _load_session_records(self, claw_session_id: str, since_turn: int = 0) -> list[dict]:
+        """Read one session's JSONL records, optionally filtering by turn."""
         row = self.session_index.get_session(claw_session_id)
         if not row:
-            return web.json_response([])
+            return []
 
         path = self.output_dir / row.jsonl_relpath
         if not path.is_file():
-            return web.json_response([])
+            return []
 
-        records = []
+        records: list[dict] = []
         try:
             text = path.read_text(encoding="utf-8")
             for line in text.splitlines():
                 line = line.strip()
-                if line:
-                    records.append(json.loads(line))
+                if not line:
+                    continue
+                rec = json.loads(line)
+                if not isinstance(rec, dict):
+                    continue
+                if since_turn > 0:
+                    turn = rec.get("turn")
+                    try:
+                        turn_i = int(turn)
+                    except (TypeError, ValueError):
+                        continue
+                    if turn_i <= since_turn:
+                        continue
+                records.append(rec)
         except (OSError, json.JSONDecodeError):
-            return web.json_response([])
-
-        return web.json_response(records)
+            return []
+        return records

@@ -99,11 +99,10 @@ def _build_test_html() -> str:
         'const __TRACE_JSONL_PATH__ = "/tmp/test.jsonl";\n'
         'const __TRACE_HTML_PATH__ = "/tmp/test.html";\n'
     )
-    html = html.replace(
-        "<script>\nconst $ = s =>",
-        f"<script>\n{data_js}</script>\n<script>\nconst $ = s =>",
-        1,
-    )
+    needle = "<script>\n/* CLAUDETAP_LIVE_CONFIG */\nconst $ = s =>"
+    if needle not in html:
+        needle = "<script>\nconst $ = s =>"
+    html = html.replace(needle, f"<script>\n{data_js}</script>\n" + needle, 1)
     return html
 
 

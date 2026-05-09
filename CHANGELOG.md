@@ -7,10 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4] - 2026-05-09
 
+### Added
+- `GET /api/sessions/full` returns full session JSONL records with `response.sse_events` and `response.ws_events` stripped for lighter exports.
+- Viewer: `Export JSON` button (top stats bar) downloads the clean full session via `/api/sessions/full`.
 
-
-
+### Changed
+- Viewer live updates: SSE usage disabled in the frontend by default; polling uses `since_turn` for incremental `/api/sessions/traces` fetches (default interval 2s).
+- `GET /api/sessions/traces` supports `since_turn` (exclusive) for incremental polling.
 
 ## [0.0.3] - 2026-05-07
 
