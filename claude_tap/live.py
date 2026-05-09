@@ -113,14 +113,21 @@ class LiveViewerServer:
 
         html = template.read_text(encoding="utf-8")
         live_js = (
-            "const LIVE_MODE = true;\nconst EMBEDDED_TRACE_DATA = [];\n"
-            'const __TRACE_JSONL_PATH__ = "";\nconst __TRACE_HTML_PATH__ = "";\n'
+            "const LIVE_MODE = true;\n"
+            "const EMBEDDED_TRACE_DATA = [];\n"
+            'const __TRACE_JSONL_PATH__ = "";\n'
+            'const __TRACE_HTML_PATH__ = "";\n'
         )
-        html = html.replace(
-            "<script>\nconst $ = s =>",
-            f"<script>\n{live_js}</script>\n<script>\nconst $ = s =>",
-            1,
-        )
+        marker = "/* CLAUDETAP_LIVE_CONFIG */\n"
+        if marker in html:
+            html = html.replace(marker, live_js, 1)
+        else:
+            # Older templates: inject before first script utility line
+            html = html.replace(
+                "<script>\nconst $ = s =>",
+                f"<script>\n{live_js}\nconst $ = s =>",
+                1,
+            )
         return web.Response(text=html, content_type="text/html")
 
     def _require_session(self, request: web.Request) -> str | None:

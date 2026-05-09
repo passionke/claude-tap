@@ -1143,6 +1143,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); heig
 </div>
 
 <script>
+/* CLAUDETAP_LIVE_CONFIG */
 const $ = s => document.querySelector(s);
 let entries = [], filtered = [], activeIdx = -1, activePaths = new Set(), searchQuery = '', activeTools = null;
 let visualOrder = []; // filtered indices in sidebar visual (DOM) order, excludes collapsed items
@@ -1841,7 +1842,8 @@ function startLivePoll() {
   if (typeof LIVE_MODE === 'undefined' || !LIVE_MODE) return;
   stopLivePoll();
   if (!getLiveSessionFilter()) return;
-  livePollTimer = setInterval(() => { pollSessionTraces(); }, 2500);
+  void pollSessionTraces();
+  livePollTimer = setInterval(() => { pollSessionTraces(); }, 1200);
 }
 
 async function pollSessionTraces() {
@@ -1859,12 +1861,15 @@ async function pollSessionTraces() {
       liveSeenIds.add(key);
       newRaw.push(r);
     }
-    if (newRaw.length === 0) return;
-    liveRecords.push(...newRaw);
-    entries.push(...expandWebSocketResponseEntries(newRaw));
-    updateLiveStatus('connected', entries.length);
-    clearTimeout(liveRenderTimer);
-    liveRenderTimer = setTimeout(() => renderApp(true), 50);
+    if (newRaw.length > 0) {
+      liveRecords.push(...newRaw);
+      entries.push(...expandWebSocketResponseEntries(newRaw));
+      clearTimeout(liveRenderTimer);
+      liveRenderTimer = setTimeout(() => renderApp(true), 50);
+    }
+    if (livePollTimer) {
+      updateLiveStatus(liveConnected ? 'connected' : 'sync', entries.length);
+    }
   } catch (e) {
     console.warn('Live poll failed:', e);
   }
@@ -1951,11 +1956,13 @@ async function onSessionSelectChange(sessionId) {
   setLiveSessionFilter(id);
   liveRecords = [];
   liveSeenIds.clear();
+  if (liveEventSource) {
+    try { liveEventSource.close(); } catch (e) {}
+    liveEventSource = null;
+  }
   if (!id) {
     stopLivePoll();
     entries = [];
-    if (liveEventSource) try { liveEventSource.close(); } catch (e) {}
-    liveEventSource = null;
     renderApp();
     return;
   }
@@ -2010,7 +2017,11 @@ function initLiveMode() {
 
   liveEventSource.onerror = () => {
     liveConnected = false;
-    updateLiveStatus('disconnected');
+    if (livePollTimer) {
+      updateLiveStatus('sync', entries.length);
+    } else {
+      updateLiveStatus('disconnected');
+    }
   };
 }
 
@@ -2020,14 +2031,21 @@ function updateLiveStatus(status, count) {
   const colors = {
     connecting: { bg: 'var(--amber-bg)', color: 'var(--amber)', dot: 'var(--amber)' },
     connected: { bg: 'var(--green-bg)', color: 'var(--green)', dot: 'var(--green)' },
+    sync: { bg: 'var(--green-bg)', color: 'var(--green)', dot: 'var(--green)' },
     disconnected: { bg: 'var(--red-bg)', color: 'var(--red)', dot: 'var(--red)' }
   };
   const c = colors[status] || colors.connecting;
-  const labels = { connecting: 'Connecting...', connected: 'Live', disconnected: 'Disconnected' };
+  const labels = {
+    connecting: 'Connecting…',
+    connected: 'Live',
+    sync: 'Live · refreshing',
+    disconnected: 'Offline'
+  };
   const countText = count !== undefined ? ` (${count})` : '';
+  const pulse = status === 'connected' || status === 'sync' ? 'animation:pulse 2s infinite;' : '';
   el.style.background = c.bg;
   el.style.color = c.color;
-  el.innerHTML = `<span style="width:6px;height:6px;border-radius:50%;background:${c.dot};${status === 'connected' ? 'animation:pulse 2s infinite;' : ''}"></span>${labels[status]}${countText}`;
+  el.innerHTML = `<span style="width:6px;height:6px;border-radius:50%;background:${c.dot};${pulse}"></span>${labels[status]}${countText}`;
 }
 
 if (typeof LIVE_MODE !== 'undefined' && LIVE_MODE) {
