@@ -30,7 +30,9 @@ jobs:
       - run: ruff format --check .
       - run: python scripts/check_changelog.py --tag "${{ inputs.tag || github.ref_name }}"
       - run: pip install -e ".[dev]"
-      - run: python -m playwright install --with-deps chromium
+      - uses: microsoft/playwright-github-action@v1
+        with:
+          browsers: chromium
       - run: python -m pytest tests/ -x --timeout=60
 
   pypi:

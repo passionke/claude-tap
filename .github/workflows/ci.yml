@@ -43,5 +43,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
-      - run: python -m playwright install --with-deps chromium
+      - uses: microsoft/playwright-github-action@v1
+        with:
+          browsers: chromium
       - run: python -m pytest tests/ -x --timeout=60
