@@ -13,7 +13,7 @@ from claude_tap.session_index import SessionIndex
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-def pytest_configure(_config: pytest.Config) -> None:
+def pytest_configure(config: pytest.Config) -> None:
     """Fail fast when tests are not using the working-tree ``claude_tap`` package.
 
     Subprocess E2E tests spawn ``sys.executable -m claude_tap``; that only tracks

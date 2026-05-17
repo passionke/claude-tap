@@ -43,4 +43,5 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
+      - run: python -m playwright install chromium
       - run: python -m pytest tests/ -x --timeout=60
