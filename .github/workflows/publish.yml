@@ -30,7 +30,7 @@ jobs:
       - run: ruff format --check .
       - run: python scripts/check_changelog.py --tag "${{ inputs.tag || github.ref_name }}"
       - run: pip install -e ".[dev]"
-      - run: python -m playwright install chromium
+      - run: python -m playwright install --with-deps chromium
       - run: python -m pytest tests/ -x --timeout=60
 
   pypi:
