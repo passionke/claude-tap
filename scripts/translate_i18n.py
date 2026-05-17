@@ -211,7 +211,7 @@ def request_openrouter_translation(
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/liaohch3/claude-tap",
+            "HTTP-Referer": "https://github.com/passionke/claude-tap",
             "X-Title": "claude-tap i18n helper",
         },
         method="POST",

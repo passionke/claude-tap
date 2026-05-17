@@ -4,7 +4,7 @@ dynamic = ["version"]
 description = "Trace AI CLI API requests via local reverse and forward proxies. Inspect system prompts, messages, tools, and token usage."
 requires-python = ">=3.11"
 license = "MIT"
-authors = [{ name = "liaohch3" }]
+authors = [{ name = "passionke" }]
 readme = "README.md"
 keywords = ["claude", "claude-code", "codex", "cursor", "trace", "proxy", "api", "llm", "context-engineering"]
 classifiers = [
@@ -25,9 +25,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/liaohch3/claude-tap"
-Repository = "https://github.com/liaohch3/claude-tap"
-Issues = "https://github.com/liaohch3/claude-tap/issues"
+Homepage = "https://github.com/passionke/claude-tap"
+Repository = "https://github.com/passionke/claude-tap"
+Issues = "https://github.com/passionke/claude-tap/issues"
 
 [project.scripts]
 claude-tap = "claude_tap.cli:main_entry"

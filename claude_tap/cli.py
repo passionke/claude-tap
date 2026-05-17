@@ -605,7 +605,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "  claude-tap dashboard                       Browse trace history\n"
             "  claude-tap dashboard --tap-live-port 3000  Use a fixed dashboard port\n"
             "\n"
-            "homepage: https://github.com/liaohch3/claude-tap"
+            "homepage: https://github.com/passionke/claude-tap"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

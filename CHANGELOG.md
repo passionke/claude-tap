@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.6] - 2026-05-17
+
+### Changed
+- Point README, CONTRIBUTING, and package metadata to `passionke/claude-tap` (PyPI: `claw-tap`).
+- Document upstream fork attribution under MIT; add `Copyright (c) 2026 passionke` to `LICENSE`.
+
 ## [0.0.5] - 2026-05-17
 
 ### Changed

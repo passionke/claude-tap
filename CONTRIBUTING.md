@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for considering a contribution to `claude-tap`.
+Thanks for considering a contribution to this project (`claw-tap` on PyPI, `claude-tap` CLI).
 
 This project is a local proxy and trace viewer for AI coding clients. Changes can affect request routing, credential handling, trace files, and generated HTML output, so small, well-scoped pull requests are easiest to review.
 
@@ -16,7 +16,7 @@ Maintainer and automation-specific workflow notes live in `AGENTS.md`. External 
 ## Development Setup
 
 ```bash
-git clone https://github.com/liaohch3/claude-tap.git
+git clone https://github.com/passionke/claude-tap.git
 cd claude-tap
 uv sync --extra dev
 ```
