@@ -53,16 +53,8 @@ jobs:
       - name: Build package
         run: uv build
 
-      - name: Publish to PyPI (Trusted Publisher)
-        if: ${{ secrets.PYPI_API_TOKEN == '' }}
+      - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
-
-      - name: Publish to PyPI (API token fallback)
-        if: ${{ secrets.PYPI_API_TOKEN != '' }}
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          user: __token__
-          password: ${{ secrets.PYPI_API_TOKEN }}
 
   docker:
     needs: ci
