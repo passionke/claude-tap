@@ -1,5 +1,5 @@
 [project]
-name = "claude-tap"
+name = "claw-tap"
 dynamic = ["version"]
 description = "Trace AI CLI API requests via local reverse and forward proxies. Inspect system prompts, messages, tools, and token usage."
 requires-python = ">=3.11"

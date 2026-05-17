@@ -1,8 +1,8 @@
 # claude-tap
 
-[![PyPI version](https://img.shields.io/pypi/v/claude-tap.svg)](https://pypi.org/project/claude-tap/)
-[![PyPI downloads](https://img.shields.io/pypi/dm/claude-tap.svg)](https://pypi.org/project/claude-tap/)
-[![Python version](https://img.shields.io/pypi/pyversions/claude-tap.svg)](https://pypi.org/project/claude-tap/)
+[![PyPI version](https://img.shields.io/pypi/v/claw-tap.svg)](https://pypi.org/project/claw-tap/)
+[![PyPI downloads](https://img.shields.io/pypi/dm/claw-tap.svg)](https://pypi.org/project/claw-tap/)
+[![Python version](https://img.shields.io/pypi/pyversions/claw-tap.svg)](https://pypi.org/project/claw-tap/)
 [![License](https://img.shields.io/github/license/liaohch3/claude-tap.svg)](https://github.com/liaohch3/claude-tap/blob/main/LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/liaohch3/claude-tap?style=social)](https://github.com/liaohch3/claude-tap/stargazers)
 [![All Contributors](https://img.shields.io/badge/all_contributors-6-orange.svg)](#贡献者)
@@ -30,13 +30,13 @@
 
 ```bash
 # 推荐
-uv tool install claude-tap
+uv tool install claw-tap
 
 # 或用 pip
-pip install claude-tap
+pip install claw-tap
 ```
 
-升级: `uv tool upgrade claude-tap` 或 `pip install --upgrade claude-tap`
+升级: `uv tool upgrade claw-tap` 或 `pip install --upgrade claw-tap`
 
 ## 使用
 

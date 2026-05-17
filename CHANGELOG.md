@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.5] - 2026-05-17
+
+### Changed
+- Rename PyPI distribution from `claude-tap` to `claw-tap` (console entry remains `claude-tap`).
+- Restore PyPI publishing in `publish.yml` via Trusted Publisher (`pypi` environment).
+
 ## [0.0.4] - 2026-05-09
 
 ### Added

@@ -288,7 +288,7 @@ wheels = [
 ]
 
 [[package]]
-name = "claude-tap"
+name = "claw-tap"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },

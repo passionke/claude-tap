@@ -10,7 +10,7 @@ from pathlib import Path
 from claude_tap.sse import SSEReassembler
 
 try:
-    CLAUDE_TAP_VERSION = _pkg_version("claude-tap")
+    CLAUDE_TAP_VERSION = _pkg_version("claw-tap")
 except Exception:
     CLAUDE_TAP_VERSION = "0.0.0"
 
@@ -343,8 +343,7 @@ def _generate_html_viewer(trace_path: Path, html_path: Path) -> None:
         html = html.replace(
             needle,
             f"<script>\n{data_js}</script>\n"
-            f'<script type="text/plain" id="trace-raw">\n{raw_lines}\n</script>\n'
-            + needle,
+            f'<script type="text/plain" id="trace-raw">\n{raw_lines}\n</script>\n' + needle,
             1,
         )
     else:

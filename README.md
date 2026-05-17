@@ -1,8 +1,8 @@
 # claude-tap
 
-[![PyPI version](https://img.shields.io/pypi/v/claude-tap.svg)](https://pypi.org/project/claude-tap/)
-[![PyPI downloads](https://img.shields.io/pypi/dm/claude-tap.svg)](https://pypi.org/project/claude-tap/)
-[![Python version](https://img.shields.io/pypi/pyversions/claude-tap.svg)](https://pypi.org/project/claude-tap/)
+[![PyPI version](https://img.shields.io/pypi/v/claw-tap.svg)](https://pypi.org/project/claw-tap/)
+[![PyPI downloads](https://img.shields.io/pypi/dm/claw-tap.svg)](https://pypi.org/project/claw-tap/)
+[![Python version](https://img.shields.io/pypi/pyversions/claw-tap.svg)](https://pypi.org/project/claw-tap/)
 [![License](https://img.shields.io/github/license/liaohch3/claude-tap.svg)](https://github.com/liaohch3/claude-tap/blob/main/LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/liaohch3/claude-tap?style=social)](https://github.com/liaohch3/claude-tap/stargazers)
 [![All Contributors](https://img.shields.io/badge/all_contributors-6-orange.svg)](#contributors)
@@ -32,13 +32,13 @@ Requires Python 3.11+ and the CLI you want to trace: [Claude Code](https://docs.
 
 ```bash
 # Recommended
-uv tool install claude-tap
+uv tool install claw-tap
 
 # Or with pip
-pip install claude-tap
+pip install claw-tap
 ```
 
-Upgrade: `uv tool upgrade claude-tap` or `pip install --upgrade claude-tap`
+Upgrade: `uv tool upgrade claw-tap` or `pip install --upgrade claw-tap`
 
 ## Usage
 
