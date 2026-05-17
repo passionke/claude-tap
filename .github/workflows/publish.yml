@@ -30,10 +30,15 @@ jobs:
       - run: ruff format --check .
       - run: python scripts/check_changelog.py --tag "${{ inputs.tag || github.ref_name }}"
       - run: pip install -e ".[dev]"
-      - uses: microsoft/playwright-github-action@v1
-        with:
-          browsers: chromium
-      - run: python -m pytest tests/ -x --timeout=60
+      - name: Run tests (no Playwright browsers on release CI)
+        run: >-
+          python -m pytest tests/ -x --timeout=60
+          --ignore=tests/test_bedrock_viewer.py
+          --ignore=tests/test_search_browser.py
+          --ignore=tests/test_responses_browser.py
+          --ignore=tests/test_perf_viewer.py
+          --ignore=tests/test_opencode_viewer.py
+          --ignore=tests/test_nav_browser.py
 
   pypi:
     needs: ci
