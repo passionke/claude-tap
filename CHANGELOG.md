@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.7] - 2026-05-23
+
+### Added
+- `--tap-upstream-config FILE`: JSON config (`target` or `target_url`) for reverse-proxy upstream; polled by mtime so new HTTP requests pick up changes without restarting tap.
+- `--tap-upstream-config-poll SECS`: poll interval (default `2`).
+- Example: `docs/examples/upstream-config.json`.
+
+### Fixed
+- `tests/conftest.py`: `pytest_configure` hook signature for pytest 9.
+
+### Changed
+- OpenClaw setup guide documents hot-reload upstream configuration.
+
 ## [0.0.6] - 2026-05-17
 
 ### Changed

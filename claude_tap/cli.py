@@ -27,6 +27,7 @@ from claude_tap.live import LiveViewerServer
 from claude_tap.proxy import proxy_handler
 from claude_tap.session_dispatcher import SessionTraceDispatcher
 from claude_tap.session_index import SessionIndex
+from claude_tap.upstream_config import UpstreamConfigStore, poll_upstream_config, strip_path_prefix_for
 from claude_tap.viewer import _generate_html_viewer
 
 # Force UTF-8 + line-buffered stdout/stderr so emoji output works on Windows
@@ -376,6 +377,11 @@ async def async_main(args: argparse.Namespace):
     forward_server: ForwardProxyServer | None = None
     runner: web.AppRunner | None = None
     ca_cert_path: Path | None = None
+    upstream_store: UpstreamConfigStore | None = None
+    config_poll_task: asyncio.Task | None = None
+
+    if args.upstream_config_file and args.proxy_mode == "forward":
+        log.warning("--tap-upstream-config is ignored in forward proxy mode")
 
     if args.proxy_mode == "forward":
         ca_cert_path, ca_key_path = ensure_ca()
@@ -391,13 +397,27 @@ async def async_main(args: argparse.Namespace):
         print(f"🔍 claude-tap v{__version__} forward proxy on http://{args.host}:{actual_port}")
         print(f"   CA cert: {ca_cert_path}")
     else:
-        app = web.Application(client_max_size=0)  # No body size limit (proxy must forward everything)
-        app["trace_ctx"] = {
+        trace_ctx: dict[str, object] = {
             "target_url": args.target,
             "trace_dispatcher": trace_dispatcher,
             "session": session,
             **_reverse_proxy_trace_options(args.client, args.target),
         }
+        if args.upstream_config_file:
+            config_path = Path(args.upstream_config_file)
+            upstream_store = UpstreamConfigStore(
+                client=args.client,
+                config_path=config_path,
+                fallback_target=args.target,
+            )
+            upstream_store.load_initial()
+            trace_ctx["upstream"] = upstream_store
+            config_poll_task = asyncio.create_task(
+                poll_upstream_config(upstream_store, args.upstream_config_poll_seconds)
+            )
+
+        app = web.Application(client_max_size=0)  # No body size limit (proxy must forward everything)
+        app["trace_ctx"] = trace_ctx
         app.router.add_route("*", "/{path_info:.*}", proxy_handler)
 
         runner = web.AppRunner(app)
@@ -411,6 +431,10 @@ async def async_main(args: argparse.Namespace):
         except (AttributeError, IndexError, OSError):
             actual_port = args.port
         print(f"🔍 claude-tap v{__version__} listening on http://{args.host}:{actual_port}")
+        if upstream_store is not None:
+            snap = upstream_store.snapshot()
+            print(f"   Upstream config: {config_path} -> {snap.target}")
+            print(f"   Config poll: every {args.upstream_config_poll_seconds:g}s (edit file to switch upstream)")
 
     print(f"📁 Trace directory: {output_dir}")
 
@@ -440,6 +464,12 @@ async def async_main(args: argparse.Namespace):
                 pass
     finally:
         try:
+            if config_poll_task is not None:
+                config_poll_task.cancel()
+                try:
+                    await config_poll_task
+                except asyncio.CancelledError:
+                    pass
             if forward_server:
                 try:
                     await asyncio.wait_for(forward_server.stop(), timeout=10)
@@ -530,7 +560,7 @@ _CODEX_CHATGPT_TARGET = "https://chatgpt.com/backend-api/codex"
 
 def _reverse_proxy_trace_options(client: str, target: str) -> dict[str, object]:
     return {
-        "strip_path_prefix": "/v1" if client == "codex" and "api.openai.com" not in target else "",
+        "strip_path_prefix": strip_path_prefix_for(client, target),
         "force_http": False,
     }
 
@@ -645,6 +675,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     proxy_group.add_argument(
         "--tap-no-launch", action="store_true", dest="no_launch", help="Only start the proxy, don't launch client"
+    )
+    proxy_group.add_argument(
+        "--tap-upstream-config",
+        default=None,
+        dest="upstream_config_file",
+        metavar="FILE",
+        help='JSON file {"target":"https://..."} polled for hot reload (reverse mode only)',
+    )
+    proxy_group.add_argument(
+        "--tap-upstream-config-poll",
+        type=float,
+        default=2.0,
+        dest="upstream_config_poll_seconds",
+        help="Seconds between upstream config file checks (default: 2)",
     )
 
     # -- Viewer options --

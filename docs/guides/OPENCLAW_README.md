@@ -89,6 +89,26 @@ nohup claude-tap \
 | `--tap-no-open` | Do not auto-open the HTML report on exit |
 | `--tap-live` | Enable the live trace viewer frontend |
 | `--tap-live-port 8788` | Live Viewer frontend port |
+| `--tap-upstream-config FILE` | JSON file with `{"target":"https://..."}`; polled for hot reload (reverse mode) |
+| `--tap-upstream-config-poll SECS` | Poll interval in seconds (default: `2`) |
+
+#### Hot-reload upstream (no tap restart)
+
+For reverse proxy deployments, point `--tap-upstream-config` at a JSON file instead of relying only on `--tap-target`. Edit the file when Admin changes the upstream Base URL; **new** HTTP requests use the new target within one poll interval. In-flight streaming responses and established WebSocket sessions keep the upstream they connected to.
+
+Example `~/.openclaw/claude-tap-upstream.json`:
+
+```json
+{ "target": "https://api.deepseek.com" }
+```
+
+```bash
+claude-tap --tap-no-launch --tap-host 127.0.0.1 --tap-port 8787 \
+  --tap-target https://api.deepseek.com \
+  --tap-upstream-config ~/.openclaw/claude-tap-upstream.json
+```
+
+`--tap-target` remains the fallback when the config file is missing or invalid.
 
 **Security Notice: You MUST specify `--tap-host 127.0.0.1` to ensure both the proxy and frontend listen only on the loopback address. Without this flag, `--tap-no-launch` mode defaults to binding `0.0.0.0`, exposing the port to the public network.**
 

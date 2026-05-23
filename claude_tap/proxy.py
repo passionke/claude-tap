@@ -19,6 +19,7 @@ from yarl import URL
 from claude_tap.claw_session import extract_claw_session_id, strip_claw_session_header
 from claude_tap.session_dispatcher import SessionTraceDispatcher
 from claude_tap.sse import SSEReassembler
+from claude_tap.upstream_config import resolve_upstream
 
 log = logging.getLogger("claude-tap")
 
@@ -104,13 +105,14 @@ async def proxy_handler(request: web.Request) -> web.StreamResponse:
         return await _handle_websocket(request)
 
     ctx: dict = request.app["trace_ctx"]
-    target: str = ctx["target_url"]
+    upstream = resolve_upstream(ctx)
+    target = upstream.target
     trace_dispatcher: SessionTraceDispatcher = ctx["trace_dispatcher"]
     session: aiohttp.ClientSession = ctx["session"]
 
     # Strip path prefix (e.g. /v1) for codex client so that
     # /v1/responses -> target + /responses
-    strip_prefix: str = ctx.get("strip_path_prefix", "")
+    strip_prefix = upstream.strip_path_prefix
     fwd_path = request.path_qs
     if strip_prefix and fwd_path.startswith(strip_prefix):
         fwd_path = fwd_path[len(strip_prefix) :] or "/"
@@ -406,11 +408,12 @@ def _get_ws_proxy_settings(ws_url: str) -> tuple[URL, aiohttp.BasicAuth | None] 
 async def _handle_websocket(request: web.Request) -> web.StreamResponse:
     """Proxy a WebSocket connection to the upstream, recording all messages."""
     ctx: dict = request.app["trace_ctx"]
-    target: str = ctx["target_url"]
+    upstream = resolve_upstream(ctx)
+    target = upstream.target
     trace_dispatcher: SessionTraceDispatcher = ctx["trace_dispatcher"]
     session: aiohttp.ClientSession = ctx["session"]
 
-    strip_prefix: str = ctx.get("strip_path_prefix", "")
+    strip_prefix = upstream.strip_path_prefix
     fwd_path = request.path_qs
     if strip_prefix and fwd_path.startswith(strip_prefix):
         fwd_path = fwd_path[len(strip_prefix) :] or "/"
