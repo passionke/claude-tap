@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.8] - 2026-05-26
+
+### Added
+- GitHub Actions workflow `claude-tap-acr.yaml`: push `claw-tap` Docker image to ACR or any Docker registry on `v*` / `release-v*` tags (same pattern as claw-code); optional `CONTAINER_BASE_REGISTRY` for base image mirror.
+
+### Changed
+- `Dockerfile`: `PYTHON_BASE_IMAGE` build arg for CI-controlled base image pulls.
+- `publish.yml`: GitHub Release notes list GHCR and ACR image hints.
+- `docs/deploy-compose.md`: ACR variables, secrets, and pull/run examples.
+
 ## [0.0.7] - 2026-05-23
 
 ### Added

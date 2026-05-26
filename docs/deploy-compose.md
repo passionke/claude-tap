@@ -28,3 +28,32 @@ The compose file mounts `./traces` on the host to `/data/traces` in the containe
 ## Security
 
 Do not expose ports 8080/3000 to the public internet without TLS termination (for example nginx or Traefik in front) and appropriate network restrictions. The proxy forwards API traffic and is not an authenticated application service.
+
+## ACR / private registry (CI)
+
+For faster pulls in China, CI can push release images to Aliyun ACR (or any Docker registry) via workflow `.github/workflows/claude-tap-acr.yaml` — same pattern as [claw-code `claw-code-acr.yaml`](https://github.com/passionke/claw-code/blob/main/.github/workflows/claw-code-acr.yaml).
+
+**Trigger:** push tag `v*` / `release-v*` (same as `publish.yml`), or manual **workflow_dispatch**.
+
+**GitHub setup** (reuse the `claw-acr` environment from claw-code if you already have it):
+
+| Kind | Name | Example |
+|------|------|---------|
+| Variable | `ACR_REGISTRY` | `crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/my-ns` |
+| Variable | `CONTAINER_BASE_REGISTRY` (optional) | `docker.1ms.run` |
+| Variable | `ACR_GITHUB_ENVIRONMENT` (optional) | `claw-acr` |
+| Secret | `ACR_USERNAME` | RAM user or registry token username |
+| Secret | `ACR_PASSWORD` | Registry password |
+
+**Pulled image name:** `${ACR_REGISTRY}/claw-tap:<tag>` (also `:latest`, `:sha-<git-sha>`).
+
+Example:
+
+```bash
+docker pull crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/my-ns/claw-tap:v0.0.7
+docker run --rm -p 8080:8080 -p 3000:3000 \
+  -v "$(pwd)/traces:/data/traces" \
+  crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/my-ns/claw-tap:v0.0.7
+```
+
+GHCR images from `publish.yml` remain available as `ghcr.io/<owner>/claude-tap:<tag>` when you need them.

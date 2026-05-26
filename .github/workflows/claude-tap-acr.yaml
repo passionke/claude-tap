@@ -1,0 +1,123 @@
+# Push claude-tap / claw-tap runtime image to a private registry (Aliyun ACR, Azure ACR, etc.).
+# Mirrors claw-code's claw-code-acr.yaml; use when GHCR is slow or unstable in CN regions.
+# Author: kejiqing
+#
+# Trigger: same release tags as publish.yml (`v*`, `release-v*`), or workflow_dispatch.
+#
+# GitHub Environment (recommended for secrets):
+#   Job uses vars.ACR_GITHUB_ENVIRONMENT or defaults to `claw-acr`.
+#   Create that environment (or set repo variable ACR_GITHUB_ENVIRONMENT) with:
+#
+# Variables:
+#   ACR_REGISTRY — image prefix (no tag), no https://
+#     • Azure: myregistry.azurecr.io
+#     • Aliyun personal: crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/<namespace>
+#       (login host = part before first `/`; namespace stays in image path)
+#   CONTAINER_BASE_REGISTRY (optional) — e.g. docker.1ms.run for faster base pulls
+#
+# Secrets: ACR_USERNAME, ACR_PASSWORD
+#
+# Image pushed: ${ACR_REGISTRY}/claw-tap:<release-tag>, :<version>, :sha-<12>, :latest
+name: claude-tap-acr
+
+on:
+  push:
+    tags:
+      - "v*"
+      - "release-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (e.g. v0.0.8)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-push-acr:
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') ||
+      startsWith(github.ref, 'refs/tags/release-v') ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: ${{ vars.ACR_GITHUB_ENVIRONMENT || 'claw-acr' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          fetch-depth: 0
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Verify ACR_REGISTRY and derive login host
+        id: reg
+        env:
+          ACR_REGISTRY: ${{ vars.ACR_REGISTRY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ACR_REGISTRY}" ]; then
+            echo "::error::ACR_REGISTRY is empty. Set it on GitHub Environment (default: claw-acr) or repository variables. Example: crpi-xxx.cn-hangzhou.personal.cr.aliyuncs.com/<namespace> — no https://." >&2
+            exit 1
+          fi
+          LOGIN_HOST="${ACR_REGISTRY%%/*}"
+          echo "login_host=${LOGIN_HOST}" >> "$GITHUB_OUTPUT"
+          echo "image_prefix=${ACR_REGISTRY}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ steps.reg.outputs.login_host }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Resolve build base image
+        id: base_images
+        env:
+          CONTAINER_BASE_REGISTRY: ${{ vars.CONTAINER_BASE_REGISTRY }}
+        run: |
+          set -euo pipefail
+          REG="${CONTAINER_BASE_REGISTRY:-}"
+          if [ -z "${REG}" ]; then
+            REG="docker.io"
+          fi
+          PYTHON_IMAGE="${REG}/library/python:3.12-slim-bookworm"
+          echo "container_base_registry=${REG}" >> "$GITHUB_OUTPUT"
+          echo "python_image=${PYTHON_IMAGE}" >> "$GITHUB_OUTPUT"
+
+      - name: Image tags
+        id: meta
+        env:
+          PREFIX: ${{ steps.reg.outputs.image_prefix }}
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag || github.ref_name }}"
+          version="${tag#release-v}"
+          version="${version#v}"
+          IMAGE="${PREFIX}/claw-tap"
+          SHA12="${GITHUB_SHA:0:12}"
+          echo "release_tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "release_version=${version}" >> "$GITHUB_OUTPUT"
+          {
+            echo "tags<<EOF"
+            echo "${IMAGE}:${tag}"
+            echo "${IMAGE}:${version}"
+            echo "${IMAGE}:sha-${SHA12}"
+            echo "${IMAGE}:latest"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push claw-tap
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          build-args: |
+            PYTHON_BASE_IMAGE=${{ steps.base_images.outputs.python_image }}
+          tags: ${{ steps.meta.outputs.tags }}

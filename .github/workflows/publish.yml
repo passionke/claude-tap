@@ -137,8 +137,9 @@ jobs:
             echo
             echo "PyPI: https://pypi.org/project/claw-tap/"
             echo
-            echo "Docker image:"
-            echo "- ${image}"
+            echo "Docker images:"
+            echo "- GHCR: ${image}"
+            echo "- ACR (if configured): see docs/deploy-compose.md — \${ACR_REGISTRY}/claw-tap:${tag}"
           } > "$release_notes_file"
           gh release create "$tag" \
             --title "$tag" \
