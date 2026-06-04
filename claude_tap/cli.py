@@ -21,8 +21,21 @@ import aiohttp
 from aiohttp import web
 
 from claude_tap.certs import CertificateAuthority, ensure_ca
+from claude_tap.cluster_identity import (
+    claw_gateway_env_configured,
+    gateway_cluster_id_from_env,
+    gateway_database_url_from_env,
+    local_cluster_identity,
+)
 from claude_tap.cursor_transcript import import_cursor_transcripts
 from claude_tap.forward_proxy import ForwardProxyServer
+from claude_tap.gateway_llm import GatewayLlmConfigError
+from claude_tap.gateway_upstream import (
+    GatewayLlmUpstreamStore,
+    gateway_llm_poll_interval_seconds,
+    poll_gateway_llm_upstream,
+)
+from claude_tap.health import healthz_handler
 from claude_tap.live import LiveViewerServer
 from claude_tap.proxy import proxy_handler
 from claude_tap.session_dispatcher import SessionTraceDispatcher
@@ -378,7 +391,9 @@ async def async_main(args: argparse.Namespace):
     runner: web.AppRunner | None = None
     ca_cert_path: Path | None = None
     upstream_store: UpstreamConfigStore | None = None
+    gateway_upstream_store: GatewayLlmUpstreamStore | None = None
     config_poll_task: asyncio.Task | None = None
+    claw_cluster_identity = None
 
     if args.upstream_config_file and args.proxy_mode == "forward":
         log.warning("--tap-upstream-config is ignored in forward proxy mode")
@@ -403,7 +418,34 @@ async def async_main(args: argparse.Namespace):
             "session": session,
             **_reverse_proxy_trace_options(args.client, args.target),
         }
-        if args.upstream_config_file:
+        if claw_gateway_env_configured():
+            cluster_id = gateway_cluster_id_from_env()
+            database_url = gateway_database_url_from_env()
+            claw_cluster_identity = local_cluster_identity(cluster_id, database_url)
+            gateway_upstream_store = GatewayLlmUpstreamStore(
+                client=args.client,
+                database_url=database_url,
+                cluster_id=cluster_id,
+            )
+            try:
+                gateway_upstream_store.load_initial()
+            except GatewayLlmConfigError as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                await session.close()
+                if live_server:
+                    await live_server.stop()
+                return 1
+            trace_ctx["upstream"] = gateway_upstream_store
+            config_poll_task = asyncio.create_task(
+                poll_gateway_llm_upstream(gateway_upstream_store, gateway_llm_poll_interval_seconds())
+            )
+            if args.upstream_config_file:
+                log.warning(
+                    "--tap-upstream-config ignored when %s and %s are set (PostgreSQL is upstream source)",
+                    "CLAW_CLUSTER_ID",
+                    "CLAW_GATEWAY_DATABASE_URL",
+                )
+        elif args.upstream_config_file:
             config_path = Path(args.upstream_config_file)
             upstream_store = UpstreamConfigStore(
                 client=args.client,
@@ -418,6 +460,11 @@ async def async_main(args: argparse.Namespace):
 
         app = web.Application(client_max_size=0)  # No body size limit (proxy must forward everything)
         app["trace_ctx"] = trace_ctx
+        if claw_cluster_identity is not None:
+            app["claw_cluster_identity"] = claw_cluster_identity
+            if gateway_upstream_store is not None:
+                app["gateway_upstream_store"] = gateway_upstream_store
+            app.router.add_get("/healthz", healthz_handler)
         app.router.add_route("*", "/{path_info:.*}", proxy_handler)
 
         runner = web.AppRunner(app)
@@ -431,7 +478,16 @@ async def async_main(args: argparse.Namespace):
         except (AttributeError, IndexError, OSError):
             actual_port = args.port
         print(f"🔍 claude-tap v{__version__} listening on http://{args.host}:{actual_port}")
-        if upstream_store is not None:
+        if gateway_upstream_store is not None:
+            rt = gateway_upstream_store.runtime
+            snap = gateway_upstream_store.snapshot()
+            print(f"   Gateway LLM upstream (PostgreSQL): {snap.target}")
+            if rt is not None:
+                print(f"   Active model: {rt.model_name} ({rt.model_id})")
+            print(f"   Cluster: {claw_cluster_identity.cluster_id} hash={claw_cluster_identity.cluster_hash}")
+            print("   Health: GET /healthz")
+            print(f"   LLM config poll: every {gateway_llm_poll_interval_seconds():g}s")
+        elif upstream_store is not None:
             snap = upstream_store.snapshot()
             print(f"   Upstream config: {config_path} -> {snap.target}")
             print(f"   Config poll: every {args.upstream_config_poll_seconds:g}s (edit file to switch upstream)")

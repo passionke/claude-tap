@@ -17,6 +17,7 @@ from aiohttp.helpers import get_env_proxy_for_url
 from yarl import URL
 
 from claude_tap.claw_session import extract_claw_session_id, strip_claw_session_header
+from claude_tap.gateway_upstream import GatewayLlmUpstreamStore
 from claude_tap.session_dispatcher import SessionTraceDispatcher
 from claude_tap.sse import SSEReassembler
 from claude_tap.upstream_config import resolve_upstream
@@ -91,6 +92,16 @@ def _is_allowed_path(path: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _pg_upstream_not_ready(ctx: dict) -> web.Response | None:
+    store = ctx.get("upstream")
+    if isinstance(store, GatewayLlmUpstreamStore) and not store.is_ready():
+        return web.Response(
+            status=503,
+            text="claw-tap: no active LLM in PostgreSQL for this cluster",
+        )
+    return None
+
+
 async def proxy_handler(request: web.Request) -> web.StreamResponse:
     # Reject requests to unknown paths (scanner/crawler protection)
     if not _is_allowed_path(request.path):
@@ -105,6 +116,8 @@ async def proxy_handler(request: web.Request) -> web.StreamResponse:
         return await _handle_websocket(request)
 
     ctx: dict = request.app["trace_ctx"]
+    if blocked := _pg_upstream_not_ready(ctx):
+        return blocked
     upstream = resolve_upstream(ctx)
     target = upstream.target
     trace_dispatcher: SessionTraceDispatcher = ctx["trace_dispatcher"]
@@ -408,6 +421,8 @@ def _get_ws_proxy_settings(ws_url: str) -> tuple[URL, aiohttp.BasicAuth | None] 
 async def _handle_websocket(request: web.Request) -> web.StreamResponse:
     """Proxy a WebSocket connection to the upstream, recording all messages."""
     ctx: dict = request.app["trace_ctx"]
+    if blocked := _pg_upstream_not_ready(ctx):
+        return blocked
     upstream = resolve_upstream(ctx)
     target = upstream.target
     trace_dispatcher: SessionTraceDispatcher = ctx["trace_dispatcher"]
