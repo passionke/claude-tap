@@ -1,11 +1,15 @@
 # Local proxy + live viewer. Mount a volume so traces survive container restarts.
 # Clients: ANTHROPIC_BASE_URL=http://<host>:8080 claude
 # Live UI: http://<host>:3000/?session=<claw-session-id>
+#
+# Copy .env.example → .env (tap-only vars; not the full claw-code stack file).
+# Gateway mode: set CLAW_CLUSTER_ID + CLAW_GATEWAY_DATABASE_URL — see docs/claw-tap-gateway-mode.md
 services:
   claude-tap:
     build: .
     env_file:
-      - .env
+      - path: .env
+        required: false
     ports:
       - "${CLAUDE_TAP_PORT:-8080}:${CLAUDE_TAP_PORT:-8080}"
       - "${CLAUDE_TAP_LIVE_PORT:-3000}:${CLAUDE_TAP_LIVE_PORT:-3000}"

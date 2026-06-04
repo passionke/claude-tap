@@ -2,6 +2,26 @@
 
 This runs **claude-tap** in `--tap-no-launch` mode: only the proxy and optional live viewer are started inside the container. Install Claude Code / Codex / Cursor on client machines separately.
 
+## Environment
+
+claude-tap only needs a small env surface — not the full claw-code gateway stack file.
+
+```bash
+cp .env.example .env
+# edit .env (ports, optional CLAW_CLUSTER_ID + CLAW_GATEWAY_DATABASE_URL for gateway mode)
+```
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CLAUDE_TAP_PORT` | `8080` | Proxy listen port |
+| `CLAUDE_TAP_LIVE_PORT` | `3000` | Live viewer port |
+| `CLAW_CLUSTER_ID` | — | Cluster label for `/healthz` (must match gateway) |
+| `CLAW_GATEWAY_DATABASE_URL` | — | **Tap connects here**; periodic read of active LLM upstream |
+| `CLAW_GATEWAY_LLM_CONFIG_POLL_INTERVAL_SECS` | `30` | How often tap refreshes upstream from PG |
+| `OPENAI_BASE_URL` | `https://api.openai.com` | Fallback only until PG has an active model |
+
+Gateway, pool, worker, and Git settings belong in **claw-code** (`deploy/stack/env.local.example`), not here.
+
 ## Build and run
 
 ```bash
