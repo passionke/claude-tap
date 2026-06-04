@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.9] - 2026-06-04
+
+### Added
+- **Claw gateway mode**: when `CLAW_CLUSTER_ID` and `CLAW_GATEWAY_DATABASE_URL` are set, tap polls PostgreSQL for the active LLM upstream (same tables as http-gateway-rs).
+- `GET /healthz` with `clusterId` and `clusterHash` for http-gateway-rs probe registration.
+- `.env.example`, optional compose `.env`, and `docs/claw-tap-gateway-mode.md` for claw-code stack integration.
+- Unit tests for cluster identity, gateway LLM config, and `/healthz`.
+
+### Changed
+- `docker-compose.yml`: optional `.env` file; gateway mode documented in comments.
+- `docs/deploy-compose.md`: tap-only env surface and gateway variables.
+- Dependency: `psycopg[binary]` for PostgreSQL upstream polling.
+
 ## [0.0.8] - 2026-05-26
 
 ### Added
