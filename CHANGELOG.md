@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.10] - 2026-06-21
+
+### Added
+- `--tap-live-prefix-path` CLI flag and `CLAUDE_TAP_LIVE_PREFIX_PATH` env var for live viewer API calls behind reverse-proxy subpath routing (e.g. e2b `/e2b/{port}/{sandboxId}/`).
+- `liveUrl()` helper in live viewer HTML; injects `LIVE_PREFIX_PATH` from server config.
+- Tests in `tests/test_live_prefix_path.py`.
+
 ## [0.0.9] - 2026-06-04
 
 ### Added
