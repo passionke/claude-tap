@@ -17,6 +17,14 @@ from claude_tap.session_index import SessionIndex
 _SSE_REPLAY_MAX = 5000
 
 
+def normalize_live_prefix_path(prefix_path: str) -> str:
+    """Normalize external prefix path for live viewer JS (e.g. e2b subpath routing)."""
+    raw = str(prefix_path or "").strip()
+    if not raw:
+        return ""
+    return raw.rstrip("/") if raw.startswith("/") else f"/{raw.rstrip('/')}"
+
+
 class LiveViewerServer:
     """HTTP server for real-time trace viewing via SSE."""
 
@@ -26,11 +34,13 @@ class LiveViewerServer:
         session_index: SessionIndex,
         port: int = 0,
         host: str = "127.0.0.1",
+        prefix_path: str = "",
     ):
         self.output_dir = Path(output_dir)
         self.session_index = session_index
         self.port = port
         self.host = host
+        self.prefix_path = normalize_live_prefix_path(prefix_path)
         self._sse_clients: list[tuple[web.StreamResponse, str]] = []
         self._session_buffers: dict[str, deque] = {}
         self._lock = asyncio.Lock()
@@ -116,6 +126,7 @@ class LiveViewerServer:
         html = template.read_text(encoding="utf-8")
         live_js = (
             "const LIVE_MODE = true;\n"
+            f"const LIVE_PREFIX_PATH = {json.dumps(self.prefix_path)};\n"
             "const EMBEDDED_TRACE_DATA = [];\n"
             'const __TRACE_JSONL_PATH__ = "";\n'
             'const __TRACE_HTML_PATH__ = "";\n'

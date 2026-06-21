@@ -1863,7 +1863,7 @@ async function pollSessionTraces() {
   const filt = getLiveSessionFilter();
   if (!filt) return;
   try {
-    const resp = await fetch('/api/sessions/traces?' + new URLSearchParams({
+    const resp = await fetch(liveUrl('/api/sessions/traces?') + new URLSearchParams({
       session: filt,
       since_turn: String(liveLastTurn || 0),
     }));
@@ -1893,6 +1893,13 @@ async function pollSessionTraces() {
 let sessionsListOffset = 0;
 let sessionsListTotal = 0;
 
+function liveUrl(path) {
+  const prefix = (typeof LIVE_PREFIX_PATH !== 'undefined' && LIVE_PREFIX_PATH)
+    ? String(LIVE_PREFIX_PATH).replace(/\/$/, '') : '';
+  const rel = path.startsWith('/') ? path : '/' + path;
+  return prefix + rel;
+}
+
 function getLiveSessionFilter() {
   try {
     const p = new URLSearchParams(window.location.search);
@@ -1905,7 +1912,7 @@ function getLiveSessionFilter() {
 
 function liveEventsUrl() {
   const s = getLiveSessionFilter();
-  return s ? '/events?' + new URLSearchParams({ session: s }).toString() : null;
+  return s ? liveUrl('/events?') + new URLSearchParams({ session: s }).toString() : null;
 }
 
 function setLiveSessionFilter(sessionId) {
@@ -1936,7 +1943,7 @@ function refreshLiveConnection() {
 async function fetchSessionsPage(reset) {
   try {
     if (reset) sessionsListOffset = 0;
-    const resp = await fetch(`/api/sessions?limit=100&offset=${sessionsListOffset}`);
+    const resp = await fetch(liveUrl(`/api/sessions?limit=100&offset=${sessionsListOffset}`));
     const data = await resp.json();
     if (!data.sessions) return;
     sessionsListTotal = data.total || 0;
@@ -1982,7 +1989,7 @@ async function exportSessionFullJson() {
     btn.textContent = 'Exporting...';
   }
   try {
-    const resp = await fetch('/api/sessions/full?' + new URLSearchParams({ session: sid }));
+    const resp = await fetch(liveUrl('/api/sessions/full?') + new URLSearchParams({ session: sid }));
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
     const pretty = JSON.stringify(data, null, 2);
@@ -2027,7 +2034,7 @@ async function onSessionSelectChange(sessionId) {
   }
   if (exportBtn) exportBtn.style.display = 'inline-flex';
   try {
-    const resp = await fetch('/api/sessions/traces?' + new URLSearchParams({
+    const resp = await fetch(liveUrl('/api/sessions/traces?') + new URLSearchParams({
       session: id,
       since_turn: '0',
     }));
