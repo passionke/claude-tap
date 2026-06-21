@@ -357,6 +357,7 @@ async def async_main(args: argparse.Namespace):
             session_index,
             port=args.live_port,
             host=args.host,
+            prefix_path=args.live_prefix_path,
         )
         await live_server.start()
         trace_dispatcher.attach_live_server(live_server)
@@ -769,6 +770,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="live_port",
         help="Port for live viewer server (default: auto)",
     )
+    viewer_group.add_argument(
+        "--tap-live-prefix-path",
+        default=os.environ.get("CLAUDE_TAP_LIVE_PREFIX_PATH", ""),
+        dest="live_prefix_path",
+        help=(
+            "External URL path prefix for live viewer API calls "
+            "(e.g. /e2b/3000/sbx_xxx when behind reverse proxy subpath routing)"
+        ),
+    )
 
     # -- Storage & update options --
     storage_group = tap_parser.add_argument_group("storage and update options")
@@ -837,6 +847,15 @@ def parse_dashboard_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Dashboard server port (default: auto)",
     )
     parser.add_argument(
+        "--tap-live-prefix-path",
+        default=os.environ.get("CLAUDE_TAP_LIVE_PREFIX_PATH", ""),
+        dest="live_prefix_path",
+        help=(
+            "External URL path prefix for live viewer API calls "
+            "(e.g. /e2b/3000/sbx_xxx when behind reverse proxy subpath routing)"
+        ),
+    )
+    parser.add_argument(
         "--tap-host",
         default="127.0.0.1",
         dest="host",
@@ -858,7 +877,13 @@ async def dashboard_main(args: argparse.Namespace) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     session_index = SessionIndex(output_dir)
-    server = LiveViewerServer(output_dir, session_index, port=args.live_port, host=args.host)
+    server = LiveViewerServer(
+        output_dir,
+        session_index,
+        port=args.live_port,
+        host=args.host,
+        prefix_path=args.live_prefix_path,
+    )
     await server.start()
     print(f"🌐 claude-tap dashboard: {server.url}")
     print(f"📁 Trace directory: {output_dir}")
