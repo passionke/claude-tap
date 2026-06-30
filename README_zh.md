@@ -153,6 +153,19 @@ claude-tap --tap-client codex --tap-no-launch --tap-port 8080
 OPENAI_BASE_URL=http://127.0.0.1:8080/v1 codex -c 'openai_base_url="http://127.0.0.1:8080/v1"'
 ```
 
+### Claw gateway 模式（PostgreSQL）
+
+与 [claw-code](https://github.com/passionke/claw-code) 栈集成时，设置 `CLAW_CLUSTER_ID` 和 `CLAW_GATEWAY_DATABASE_URL`，tap 从与 http-gateway-rs 相同的 PostgreSQL 读取当前 LLM 的**上游 URL 与 API key**。Worker 只需把 `OPENAI_BASE_URL` 指向 tap；tap 转发到真实 LLM 时使用 DB 中的 key（不会透传客户端自带的鉴权 header）。
+
+```bash
+export CLAW_CLUSTER_ID=local-dev
+export CLAW_GATEWAY_DATABASE_URL=postgres://claw_gateway:secret@postgres:5432/claw_gateway
+
+claude-tap --tap-no-launch --tap-host 0.0.0.0 --tap-port 8080 --tap-client codex
+```
+
+详见 [docs/claw-tap-gateway-mode.zh.md](docs/claw-tap-gateway-mode.zh.md) 与 [docs/deploy-compose.md](docs/deploy-compose.md)。
+
 运行 `claude-tap --help` 查看完整选项。非 `--tap-*` 参数会透传给所选客户端。
 
 ## 查看器功能

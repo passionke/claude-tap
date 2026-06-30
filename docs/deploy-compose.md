@@ -16,9 +16,10 @@ cp .env.example .env
 | `CLAUDE_TAP_PORT` | `8080` | Proxy listen port |
 | `CLAUDE_TAP_LIVE_PORT` | `3000` | Live viewer port |
 | `CLAW_CLUSTER_ID` | — | Cluster label for `/healthz` (must match gateway) |
-| `CLAW_GATEWAY_DATABASE_URL` | — | **Tap connects here**; periodic read of active LLM upstream |
-| `CLAW_GATEWAY_LLM_CONFIG_POLL_INTERVAL_SECS` | `30` | How often tap refreshes upstream from PG |
-| `OPENAI_BASE_URL` | `https://api.openai.com` | Fallback only until PG has an active model |
+| `CLAW_GATEWAY_DATABASE_URL` | — | **Tap connects here**; periodic read of active LLM upstream **and API key** |
+| `CLAW_GATEWAY_LLM_CONFIG_POLL_INTERVAL_SECS` | `30` | How often tap refreshes upstream URL and API key from PG |
+
+In gateway mode tap **does not** use `OPENAI_BASE_URL` or `--tap-target` for upstream routing. The LLM API key is loaded from PostgreSQL and injected on upstream requests (client `Authorization` / `x-api-key` headers are replaced when a DB key exists). See [claw-tap-gateway-mode.md](claw-tap-gateway-mode.md).
 
 Gateway, pool, worker, and Git settings belong in **claw-code** (`deploy/stack/env.local.example`), not here.
 
