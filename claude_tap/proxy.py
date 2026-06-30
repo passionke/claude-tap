@@ -17,7 +17,7 @@ from aiohttp.helpers import get_env_proxy_for_url
 from yarl import URL
 
 from claude_tap.claw_session import extract_claw_session_id, strip_claw_session_header
-from claude_tap.gateway_upstream import GatewayLlmUpstreamStore
+from claude_tap.gateway_upstream import GatewayLlmUpstreamStore, apply_gateway_auth_headers
 from claude_tap.session_dispatcher import SessionTraceDispatcher
 from claude_tap.sse import SSEReassembler
 from claude_tap.upstream_config import resolve_upstream
@@ -102,6 +102,16 @@ def _pg_upstream_not_ready(ctx: dict) -> web.Response | None:
     return None
 
 
+def _apply_gateway_upstream_auth(ctx: dict, fwd_headers: dict[str, str]) -> None:
+    store = ctx.get("upstream")
+    if not isinstance(store, GatewayLlmUpstreamStore):
+        return
+    runtime = store.runtime
+    if runtime is None:
+        return
+    apply_gateway_auth_headers(fwd_headers, client=store.client, api_key=runtime.api_key)
+
+
 async def proxy_handler(request: web.Request) -> web.StreamResponse:
     # Reject requests to unknown paths (scanner/crawler protection)
     if not _is_allowed_path(request.path):
@@ -138,6 +148,7 @@ async def proxy_handler(request: web.Request) -> web.StreamResponse:
     raw_claw = extract_claw_session_id(request.headers)
     fwd_headers = filter_headers(request.headers)
     strip_claw_session_header(fwd_headers)
+    _apply_gateway_upstream_auth(ctx, fwd_headers)
     fwd_headers.pop("Host", None)
     # Strip Content-Encoding since aiohttp already decompressed the body;
     # also remove stale Content-Length (aiohttp client will recompute it).
@@ -446,6 +457,7 @@ async def _handle_websocket(request: web.Request) -> web.StreamResponse:
     # Forward auth headers, strip hop-by-hop and WS handshake headers
     fwd_headers = filter_headers(request.headers)
     strip_claw_session_header(fwd_headers)
+    _apply_gateway_upstream_auth(ctx, fwd_headers)
     fwd_headers.pop("Host", None)
     for h in list(fwd_headers.keys()):
         if h.lower() in _WS_HANDSHAKE_HEADERS:

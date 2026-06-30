@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Claw gateway mode: prefer PostgreSQL-managed LLM API key over client request headers when forwarding upstream (HTTP and WebSocket).
+
 ## [0.0.10] - 2026-06-21
 
 ### Added
