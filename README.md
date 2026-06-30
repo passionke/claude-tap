@@ -155,6 +155,19 @@ claude-tap --tap-client codex --tap-no-launch --tap-port 8080
 OPENAI_BASE_URL=http://127.0.0.1:8080/v1 codex -c 'openai_base_url="http://127.0.0.1:8080/v1"'
 ```
 
+### Claw gateway mode (PostgreSQL)
+
+For [claw-code](https://github.com/passionke/claw-code) stack integration, set `CLAW_CLUSTER_ID` and `CLAW_GATEWAY_DATABASE_URL` so tap reads the active LLM **URL and API key** from the same PostgreSQL as http-gateway-rs. Workers point `OPENAI_BASE_URL` at tap; tap injects the DB-managed key when calling the real LLM (client auth headers are not forwarded).
+
+```bash
+export CLAW_CLUSTER_ID=local-dev
+export CLAW_GATEWAY_DATABASE_URL=postgres://claw_gateway:secret@postgres:5432/claw_gateway
+
+claude-tap --tap-no-launch --tap-host 0.0.0.0 --tap-port 8080 --tap-client codex
+```
+
+See [docs/claw-tap-gateway-mode.md](docs/claw-tap-gateway-mode.md) and [docs/deploy-compose.md](docs/deploy-compose.md).
+
 Run `claude-tap --help` for all options. Flags that are not `--tap-*` are forwarded to the selected client.
 
 ## Viewer Features
