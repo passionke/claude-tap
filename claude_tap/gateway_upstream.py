@@ -13,6 +13,27 @@ log = logging.getLogger("claude-tap")
 
 DEFAULT_POLL_SECS = 30.0
 
+_AUTH_HEADER_NAMES = frozenset({"x-api-key", "authorization"})
+
+
+def apply_gateway_auth_headers(headers: dict[str, str], *, client: str, api_key: str) -> None:
+    """Replace client auth headers with the gateway-managed API key from PostgreSQL.
+
+    In claw gateway mode the LLM key is stored in DB; client-supplied keys must not
+    override it when forwarding to the upstream LLM.
+    Author: kejiqing
+    """
+    key = api_key.strip()
+    if not key:
+        return
+    for name in list(headers):
+        if name.lower() in _AUTH_HEADER_NAMES:
+            del headers[name]
+    if client == "claude":
+        headers["x-api-key"] = key
+    else:
+        headers["Authorization"] = f"Bearer {key}"
+
 
 def gateway_llm_poll_interval_seconds() -> float:
     raw = os.environ.get("CLAW_GATEWAY_LLM_CONFIG_POLL_INTERVAL_SECS", "").strip()
