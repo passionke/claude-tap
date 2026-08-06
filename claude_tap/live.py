@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import os
 from collections import OrderedDict, deque
 from pathlib import Path
 from urllib.parse import unquote
@@ -24,8 +25,6 @@ MAX_SESSIONS_ENV = "CLAUDE_TAP_MAX_SESSIONS"
 def resolve_max_sessions(raw: int | str | None = None) -> int:
     """Resolve Live session LRU size from explicit value or ``CLAUDE_TAP_MAX_SESSIONS``."""
     if raw is None:
-        import os
-
         env_raw = os.environ.get(MAX_SESSIONS_ENV, "").strip()
         raw = env_raw if env_raw else DEFAULT_MAX_SESSIONS
     try:

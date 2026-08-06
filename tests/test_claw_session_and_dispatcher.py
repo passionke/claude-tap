@@ -111,15 +111,94 @@ async def test_live_buffer_skips_unwatched_and_lru(tmp_path: Path):
 
 
 def test_resolve_max_sessions_env(monkeypatch):
-    from claude_tap.live import MAX_SESSIONS_ENV, resolve_max_sessions
+    from claude_tap.live import DEFAULT_MAX_SESSIONS, MAX_SESSIONS_ENV, resolve_max_sessions
 
     monkeypatch.delenv(MAX_SESSIONS_ENV, raising=False)
-    assert resolve_max_sessions() == 1000
+    assert resolve_max_sessions() == DEFAULT_MAX_SESSIONS
     monkeypatch.setenv(MAX_SESSIONS_ENV, "42")
     assert resolve_max_sessions() == 42
     assert resolve_max_sessions(7) == 7
     monkeypatch.setenv(MAX_SESSIONS_ENV, "0")
-    assert resolve_max_sessions() == 1000
+    assert resolve_max_sessions() == DEFAULT_MAX_SESSIONS
+    monkeypatch.setenv(MAX_SESSIONS_ENV, "-3")
+    assert resolve_max_sessions() == DEFAULT_MAX_SESSIONS
+    monkeypatch.setenv(MAX_SESSIONS_ENV, "not-a-number")
+    assert resolve_max_sessions() == DEFAULT_MAX_SESSIONS
+    monkeypatch.setenv(MAX_SESSIONS_ENV, "  ")
+    assert resolve_max_sessions() == DEFAULT_MAX_SESSIONS
+    assert resolve_max_sessions("bad") == DEFAULT_MAX_SESSIONS
+    assert resolve_max_sessions(None) == DEFAULT_MAX_SESSIONS
+
+
+@pytest.mark.asyncio
+async def test_broadcast_ignores_missing_session_id(tmp_path: Path):
+    idx = SessionIndex(tmp_path)
+    srv = LiveViewerServer(tmp_path, idx, max_sessions=10)
+    try:
+        await srv.broadcast({"request_id": "x"})
+        await srv.broadcast({"request_id": "y", "claw_session_id": ""})
+        assert srv._session_buffers == {}
+    finally:
+        await srv.stop()
+        idx.close()
+
+
+@pytest.mark.asyncio
+async def test_live_replay_cap_per_session(tmp_path: Path, monkeypatch):
+    """Per watched session, deque keeps only the newest N records."""
+    import claude_tap.live as live_mod
+
+    monkeypatch.setattr(live_mod, "_SSE_REPLAY_MAX", 3)
+    idx = SessionIndex(tmp_path)
+    srv = LiveViewerServer(tmp_path, idx, max_sessions=10)
+    try:
+        async with srv._lock:
+            srv._open_session_buffer("hot")
+        for i in range(5):
+            await srv.broadcast({"turn": i + 1, "claw_session_id": "hot"})
+        turns = [r["turn"] for r in srv._session_buffers["hot"]]
+        assert turns == [3, 4, 5]
+    finally:
+        await srv.stop()
+        idx.close()
+
+
+@pytest.mark.asyncio
+async def test_lru_skips_sessions_with_active_sse(tmp_path: Path):
+    """Active SSE subscribers must not be evicted when LRU is full."""
+    from unittest.mock import MagicMock
+
+    idx = SessionIndex(tmp_path)
+    srv = LiveViewerServer(tmp_path, idx, max_sessions=2)
+    try:
+        async with srv._lock:
+            srv._open_session_buffer("keep")
+            srv._open_session_buffer("old")
+        fake_client = MagicMock()
+        srv._sse_clients.append((fake_client, "keep"))
+        async with srv._lock:
+            srv._open_session_buffer("new")
+        assert "keep" in srv._session_buffers
+        assert "new" in srv._session_buffers
+        assert "old" not in srv._session_buffers
+    finally:
+        await srv.stop()
+        idx.close()
+
+
+@pytest.mark.asyncio
+async def test_open_session_buffer_is_idempotent(tmp_path: Path):
+    idx = SessionIndex(tmp_path)
+    srv = LiveViewerServer(tmp_path, idx, max_sessions=5)
+    try:
+        async with srv._lock:
+            a = srv._open_session_buffer("s")
+            b = srv._open_session_buffer("s")
+        assert a is b
+        assert list(srv._session_buffers.keys()) == ["s"]
+    finally:
+        await srv.stop()
+        idx.close()
 
 
 @pytest.mark.asyncio
@@ -155,6 +234,20 @@ async def test_trace_writer_reopens_after_fd_release(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_trace_writer_double_release_is_safe(tmp_path: Path):
+    from claude_tap.trace import TraceWriter
+
+    path = tmp_path / "t.jsonl"
+    w = TraceWriter(path)
+    await w.release_fd_async()
+    await w.release_fd_async()
+    assert not w.is_open
+    await w.write({"turn": 1})
+    assert w.is_open
+    w.close()
+
+
+@pytest.mark.asyncio
 async def test_dispatcher_reclaims_idle_writer_fd(tmp_path: Path):
     from claude_tap.session_dispatcher import SessionTraceDispatcher
 
@@ -172,3 +265,45 @@ async def test_dispatcher_reclaims_idle_writer_fd(tmp_path: Path):
     idx.close()
     path = tmp_path / "sessions" / d._slug_for("idle-sess") / "trace.jsonl"
     assert len(path.read_text(encoding="utf-8").strip().splitlines()) == 2
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_idle_zero_disables_reclaim(tmp_path: Path):
+    from claude_tap.session_dispatcher import SessionTraceDispatcher
+
+    idx = SessionIndex(tmp_path)
+    d = SessionTraceDispatcher(tmp_path, idx, writer_idle_seconds=0)
+    await d.write("keep", {"turn": 1, "request_id": "a"})
+    writer = d._writers[d._slug_for("keep")]
+    writer._last_used -= 10_000
+    await d.write("other", {"turn": 1, "request_id": "b"})
+    assert writer.is_open
+    d.close()
+    idx.close()
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_summary_survives_fd_reclaim(tmp_path: Path):
+    from claude_tap.session_dispatcher import SessionTraceDispatcher
+
+    idx = SessionIndex(tmp_path)
+    d = SessionTraceDispatcher(tmp_path, idx, writer_idle_seconds=0.01)
+    await d.write(
+        "s",
+        {
+            "turn": 1,
+            "request_id": "a",
+            "request": {"body": {"model": "m"}},
+            "response": {"body": {"usage": {"input_tokens": 3, "output_tokens": 4}}},
+        },
+    )
+    writer = d._writers[d._slug_for("s")]
+    writer._last_used -= 1.0
+    await d.write("t", {"turn": 1, "request_id": "b"})
+    assert not writer.is_open
+    summary = d.get_summary()
+    assert summary["api_calls"] == 2
+    assert summary["input_tokens"] == 3
+    assert summary["output_tokens"] == 4
+    d.close()
+    idx.close()
