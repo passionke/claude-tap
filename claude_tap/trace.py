@@ -4,15 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TextIO
 
 if TYPE_CHECKING:
     from claude_tap.live import LiveViewerServer
 
 
 class TraceWriter:
-    """Writes trace records to a JSONL file and accumulates statistics."""
+    """Writes trace records to a JSONL file and accumulates statistics.
+
+    File handles may be released after idle time and re-opened on the next write.
+    Author: kejiqing
+    """
 
     def __init__(self, path: Path, live_server: "LiveViewerServer | None" = None):
         self.path = path
@@ -25,17 +30,50 @@ class TraceWriter:
         self.total_cache_create_tokens = 0
         self.models_used: dict[str, int] = {}
         self._live_server = live_server
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # Keep file handle open for real-time append + flush
-        self._file = open(path, "a", encoding="utf-8")
+        self._file: TextIO | None = None
+        self._last_used = time.monotonic()
+        self._ensure_open_unlocked()
+
+    @property
+    def is_open(self) -> bool:
+        return self._file is not None and not self._file.closed
+
+    @property
+    def idle_seconds(self) -> float:
+        return time.monotonic() - self._last_used
+
+    def _ensure_open_unlocked(self) -> None:
+        """Open append handle if missing/closed (caller holds ``_lock`` or ctor)."""
+        if self._file is not None and not self._file.closed:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._file = open(self.path, "a", encoding="utf-8")
+
+    def release_fd(self) -> None:
+        """Flush and close the file handle; writer state/stats are kept.
+
+        Must not race with ``write``; callers should hold ``_lock`` or ensure idle.
+        """
+        if self._file is not None and not self._file.closed:
+            self._file.flush()
+            self._file.close()
+        self._file = None
+
+    async def release_fd_async(self) -> None:
+        """Close FD under the writer lock (safe vs concurrent ``write``)."""
+        async with self._lock:
+            self.release_fd()
 
     async def write(self, record: dict) -> None:
         """Write a record and update statistics."""
         async with self._lock:
+            self._ensure_open_unlocked()
+            assert self._file is not None
             self._file.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
             self._file.flush()
             self.count += 1
             self._update_stats(record)
+            self._last_used = time.monotonic()
 
         # Broadcast to live viewer if enabled
         if self._live_server:
@@ -43,9 +81,7 @@ class TraceWriter:
 
     def close(self) -> None:
         """Flush and close the JSONL file."""
-        if self._file and not self._file.closed:
-            self._file.flush()
-            self._file.close()
+        self.release_fd()
 
     def _update_stats(self, record: dict) -> None:
         """Extract token usage from record and update totals."""

@@ -14,6 +14,9 @@ from claude_tap.trace import TraceWriter
 if TYPE_CHECKING:
     from claude_tap.live import LiveViewerServer
 
+# Close idle TraceWriter FDs; reopen on next write for the same session. Author: kejiqing
+DEFAULT_WRITER_IDLE_SECONDS = 3600.0
+
 
 class SessionTraceDispatcher:
     """Lazy TraceWriter per session id; per-session turn allocation and stats aggregation."""
@@ -23,10 +26,12 @@ class SessionTraceDispatcher:
         output_dir: Path,
         session_index: SessionIndex,
         live_server: "LiveViewerServer | None" = None,
+        writer_idle_seconds: float = DEFAULT_WRITER_IDLE_SECONDS,
     ) -> None:
         self._output_dir = Path(output_dir)
         self._session_index = session_index
         self._live_server = live_server
+        self._writer_idle_seconds = writer_idle_seconds
         self._lock = asyncio.Lock()
         self._writers: dict[str, TraceWriter] = {}
         self._raw_to_slug: dict[str, str] = {}
@@ -57,6 +62,18 @@ class SessionTraceDispatcher:
     def jsonl_path_for_slug(self, slug: str) -> Path:
         return self._output_dir / SESSIONS_SUBDIR / slug / "trace.jsonl"
 
+    async def _reclaim_idle_writers(self) -> None:
+        """Release FDs for writers idle longer than ``writer_idle_seconds`` (keep objects)."""
+        if self._writer_idle_seconds <= 0:
+            return
+        idle = [
+            writer
+            for writer in self._writers.values()
+            if writer.is_open and writer.idle_seconds >= self._writer_idle_seconds
+        ]
+        for writer in idle:
+            await writer.release_fd_async()
+
     async def alloc_turn(self, raw_claw_session_id: str) -> int:
         """Allocate next turn index for this session (1-based within that session)."""
         slug = self._slug_for(raw_claw_session_id)
@@ -73,6 +90,7 @@ class SessionTraceDispatcher:
 
     async def _ensure_writer(self, raw_claw_session_id: str) -> TraceWriter:
         slug = self._slug_for(raw_claw_session_id)
+        await self._reclaim_idle_writers()
         if slug in self._writers:
             return self._writers[slug]
         async with self._lock:

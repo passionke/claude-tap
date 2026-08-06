@@ -664,7 +664,12 @@ class ForwardProxyServer:
 
         raw_protocol = _RawWSProtocol()
         queue = WebSocketDataQueue(raw_protocol, 2**16, loop=asyncio.get_running_loop())
-        ws_reader = WebSocketReader(queue, max_msg_size=0)
+        # aiohttp 3.14+ requires decode_text; older builds take (queue, max_msg_size, compress).
+        # Author: kejiqing
+        try:
+            ws_reader = WebSocketReader(queue, 0, True, True)
+        except TypeError:
+            ws_reader = WebSocketReader(queue, 0, True)
         ws_writer = WebSocketWriter(raw_protocol, writer.transport, use_mask=False)
 
         client_messages: list[str] = []

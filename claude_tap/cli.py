@@ -36,7 +36,7 @@ from claude_tap.gateway_upstream import (
     poll_gateway_llm_upstream,
 )
 from claude_tap.health import healthz_handler
-from claude_tap.live import LiveViewerServer
+from claude_tap.live import DEFAULT_MAX_SESSIONS, LiveViewerServer, resolve_max_sessions
 from claude_tap.proxy import proxy_handler
 from claude_tap.session_dispatcher import SessionTraceDispatcher
 from claude_tap.session_index import SessionIndex
@@ -358,6 +358,7 @@ async def async_main(args: argparse.Namespace):
             port=args.live_port,
             host=args.host,
             prefix_path=args.live_prefix_path,
+            max_sessions=args.max_sessions,
         )
         await live_server.start()
         trace_dispatcher.attach_live_server(live_server)
@@ -795,6 +796,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Max trace sessions to keep (default: 50, 0 = unlimited)",
     )
     storage_group.add_argument(
+        "--tap-max-sessions",
+        type=int,
+        default=resolve_max_sessions(),
+        dest="max_sessions",
+        help=(
+            "Max Live UI in-memory watched sessions (LRU); "
+            f"env CLAUDE_TAP_MAX_SESSIONS or default {DEFAULT_MAX_SESSIONS}"
+        ),
+    )
+    storage_group.add_argument(
         "--tap-no-update-check",
         action="store_true",
         default=disable_self_update_by_default,
@@ -856,6 +867,16 @@ def parse_dashboard_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--tap-max-sessions",
+        type=int,
+        default=resolve_max_sessions(),
+        dest="max_sessions",
+        help=(
+            "Max Live UI in-memory watched sessions (LRU); "
+            f"env CLAUDE_TAP_MAX_SESSIONS or default {DEFAULT_MAX_SESSIONS}"
+        ),
+    )
+    parser.add_argument(
         "--tap-host",
         default="127.0.0.1",
         dest="host",
@@ -883,6 +904,7 @@ async def dashboard_main(args: argparse.Namespace) -> int:
         port=args.live_port,
         host=args.host,
         prefix_path=args.live_prefix_path,
+        max_sessions=args.max_sessions,
     )
     await server.start()
     print(f"🌐 claude-tap dashboard: {server.url}")
