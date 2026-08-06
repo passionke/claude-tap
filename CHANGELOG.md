@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.12] - 2026-08-06
+
+### Fixed
+- Live viewer no longer buffers every session in RAM; only sessions opened via Live UI (`/events` or `/records`) are cached, with LRU capped by `--tap-max-sessions` / `CLAUDE_TAP_MAX_SESSIONS` (default 1000).
+- Reclaim idle `TraceWriter` JSONL file handles after 1 hour and reopen on the next write for the same session.
+- Forward-proxy WebSocket path compatible with aiohttp 3.14 `WebSocketReader` signature (`decode_text`).
+
+### Changed
+- Per watched session, in-memory SSE replay cap reduced from 5000 to 1000 records (full history remains on disk JSONL APIs).
+
 ## [0.0.11] - 2026-06-30
 
 ### Fixed
