@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
-from collections import deque
+from collections import OrderedDict, deque
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -13,8 +13,26 @@ from aiohttp import web
 
 from claude_tap.session_index import SessionIndex
 
-# Cap in-memory SSE replay per session to bound RAM (full history: use /api/sessions/traces).
-_SSE_REPLAY_MAX = 5000
+# Cap in-memory SSE replay per watched session (full history: use /api/sessions/traces).
+_SSE_REPLAY_MAX = 1000
+# Default Live UI session LRU size (--tap-max-sessions / CLAUDE_TAP_MAX_SESSIONS).
+DEFAULT_MAX_SESSIONS = 1000
+# Env for Live UI session LRU (same knob as --tap-max-sessions). Author: kejiqing
+MAX_SESSIONS_ENV = "CLAUDE_TAP_MAX_SESSIONS"
+
+
+def resolve_max_sessions(raw: int | str | None = None) -> int:
+    """Resolve Live session LRU size from explicit value or ``CLAUDE_TAP_MAX_SESSIONS``."""
+    if raw is None:
+        import os
+
+        env_raw = os.environ.get(MAX_SESSIONS_ENV, "").strip()
+        raw = env_raw if env_raw else DEFAULT_MAX_SESSIONS
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_SESSIONS
+    return value if value >= 1 else DEFAULT_MAX_SESSIONS
 
 
 def normalize_live_prefix_path(prefix_path: str) -> str:
@@ -35,22 +53,53 @@ class LiveViewerServer:
         port: int = 0,
         host: str = "127.0.0.1",
         prefix_path: str = "",
+        max_sessions: int | None = None,
     ):
         self.output_dir = Path(output_dir)
         self.session_index = session_index
         self.port = port
         self.host = host
         self.prefix_path = normalize_live_prefix_path(prefix_path)
+        self.max_sessions = resolve_max_sessions(max_sessions)
         self._sse_clients: list[tuple[web.StreamResponse, str]] = []
-        self._session_buffers: dict[str, deque] = {}
+        # Only sessions touched by Live UI (LRU). Author: kejiqing
+        self._session_buffers: OrderedDict[str, deque] = OrderedDict()
         self._lock = asyncio.Lock()
         self._runner: web.AppRunner | None = None
         self._actual_port: int = 0
         self._shutdown_event = asyncio.Event()
 
-    def _buffer_append(self, claw_session_id: str, record: dict) -> None:
+    def _active_sse_sessions(self) -> set[str]:
+        return {sf for _, sf in self._sse_clients}
+
+    def _evict_lru(self) -> None:
+        """Drop oldest buffers that have no live SSE subscriber."""
+        active = self._active_sse_sessions()
+        while len(self._session_buffers) > self.max_sessions:
+            victim = None
+            for sid in self._session_buffers:
+                if sid not in active:
+                    victim = sid
+                    break
+            if victim is None:
+                break
+            del self._session_buffers[victim]
+
+    def _open_session_buffer(self, claw_session_id: str) -> deque:
+        """Mark session as watched by UI; create empty buffer if needed."""
+        if claw_session_id in self._session_buffers:
+            self._session_buffers.move_to_end(claw_session_id)
+            return self._session_buffers[claw_session_id]
+        buf: deque = deque(maxlen=_SSE_REPLAY_MAX)
+        self._session_buffers[claw_session_id] = buf
+        self._evict_lru()
+        return buf
+
+    def _buffer_append_if_watched(self, claw_session_id: str, record: dict) -> None:
+        """Append only when Live UI has opened this session (no silent RAM growth)."""
         if claw_session_id not in self._session_buffers:
-            self._session_buffers[claw_session_id] = deque(maxlen=_SSE_REPLAY_MAX)
+            return
+        self._session_buffers.move_to_end(claw_session_id)
         self._session_buffers[claw_session_id].append(record)
 
     async def start(self) -> int:
@@ -84,25 +133,27 @@ class LiveViewerServer:
             except Exception:
                 pass
         self._sse_clients.clear()
+        self._session_buffers.clear()
 
         if self._runner:
             await self._runner.cleanup()
 
     async def broadcast(self, record: dict) -> None:
-        """Broadcast a new record to all connected SSE clients for that session."""
+        """Push to connected SSE clients; buffer only if UI already watches the session."""
         sid = record.get("claw_session_id")
         if not sid:
             return
+        sid_s = str(sid)
 
         async with self._lock:
-            self._buffer_append(str(sid), record)
+            self._buffer_append_if_watched(sid_s, record)
 
         data = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
         message = f"data: {data}\n\n"
 
         disconnected: list[web.StreamResponse] = []
         for client, sess_filter in self._sse_clients:
-            if sess_filter != str(sid):
+            if sess_filter != sid_s:
                 continue
             try:
                 await client.write(message.encode("utf-8"))
@@ -169,7 +220,7 @@ class LiveViewerServer:
         await resp.prepare(request)
 
         async with self._lock:
-            buf = self._session_buffers.get(sess_filter, deque())
+            buf = self._open_session_buffer(sess_filter)
             for record in buf:
                 data = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
                 await resp.write(f"data: {data}\n\n".encode("utf-8"))
@@ -196,7 +247,11 @@ class LiveViewerServer:
         return resp
 
     async def _handle_records(self, request: web.Request) -> web.Response:
-        """Return in-memory records for one session (requires ``?session=``)."""
+        """Return in-memory records for one session (requires ``?session=``).
+
+        Opening this endpoint marks the session as watched so subsequent
+        broadcasts are buffered (history still comes from disk JSONL APIs).
+        """
         sess = self._require_session(request)
         if not sess:
             return web.Response(
@@ -204,7 +259,7 @@ class LiveViewerServer:
                 text="session or claw_session_id query parameter is required",
             )
         async with self._lock:
-            buf = list(self._session_buffers.get(sess, ()))
+            buf = list(self._open_session_buffer(sess))
             return web.json_response(buf)
 
     async def _handle_api_sessions(self, request: web.Request) -> web.Response:

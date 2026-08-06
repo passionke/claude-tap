@@ -64,19 +64,62 @@ async def test_live_sse_filters_by_session(tmp_path: Path):
     srv = LiveViewerServer(tmp_path, idx, port=0, host="127.0.0.1")
     port = await srv.start()
     try:
-        await srv.broadcast({"request_id": "1", "claw_session_id": "A"})
-        await srv.broadcast({"request_id": "2", "claw_session_id": "B"})
-
         import aiohttp
 
         async with aiohttp.ClientSession() as session:
+            # UI open marks session watched before broadcasts buffer. Author: kejiqing
+            async with session.get(f"http://127.0.0.1:{port}/records?session=A") as resp:
+                assert await resp.json() == []
+
+            await srv.broadcast({"request_id": "1", "claw_session_id": "A"})
+            await srv.broadcast({"request_id": "2", "claw_session_id": "B"})
+
             async with session.get(f"http://127.0.0.1:{port}/records?session=A") as resp:
                 rows = await resp.json()
                 assert len(rows) == 1
                 assert rows[0]["claw_session_id"] == "A"
+
+            # B never opened via UI — still empty until watch
+            async with session.get(f"http://127.0.0.1:{port}/records?session=B") as resp:
+                assert await resp.json() == []
     finally:
         await srv.stop()
         idx.close()
+
+
+@pytest.mark.asyncio
+async def test_live_buffer_skips_unwatched_and_lru(tmp_path: Path):
+    """Broadcast without UI must not grow RAM; LRU caps watched sessions."""
+    idx = SessionIndex(tmp_path)
+    srv = LiveViewerServer(tmp_path, idx, port=0, host="127.0.0.1", max_sessions=2)
+    try:
+        await srv.broadcast({"request_id": "x", "claw_session_id": "ghost"})
+        assert "ghost" not in srv._session_buffers
+
+        async with srv._lock:
+            srv._open_session_buffer("s1")
+            srv._open_session_buffer("s2")
+            srv._open_session_buffer("s3")
+        assert list(srv._session_buffers.keys()) == ["s2", "s3"]
+        assert srv.max_sessions == 2
+
+        await srv.broadcast({"request_id": "1", "claw_session_id": "s2"})
+        assert len(srv._session_buffers["s2"]) == 1
+    finally:
+        await srv.stop()
+        idx.close()
+
+
+def test_resolve_max_sessions_env(monkeypatch):
+    from claude_tap.live import MAX_SESSIONS_ENV, resolve_max_sessions
+
+    monkeypatch.delenv(MAX_SESSIONS_ENV, raising=False)
+    assert resolve_max_sessions() == 1000
+    monkeypatch.setenv(MAX_SESSIONS_ENV, "42")
+    assert resolve_max_sessions() == 42
+    assert resolve_max_sessions(7) == 7
+    monkeypatch.setenv(MAX_SESSIONS_ENV, "0")
+    assert resolve_max_sessions() == 1000
 
 
 @pytest.mark.asyncio
@@ -91,3 +134,41 @@ async def test_alloc_turn_per_session(tmp_path: Path):
     assert await d2.alloc_turn("s1") == 3
     assert await d2.alloc_turn("s2") == 2
     d2.close()
+
+
+@pytest.mark.asyncio
+async def test_trace_writer_reopens_after_fd_release(tmp_path: Path):
+    from claude_tap.trace import TraceWriter
+
+    path = tmp_path / "sessions" / "s" / "trace.jsonl"
+    w = TraceWriter(path)
+    await w.write({"turn": 1, "claw_session_id": "s"})
+    assert w.is_open
+    w.release_fd()
+    assert not w.is_open
+    await w.write({"turn": 2, "claw_session_id": "s"})
+    assert w.is_open
+    w.close()
+    lines = path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 2
+    assert json.loads(lines[1])["turn"] == 2
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_reclaims_idle_writer_fd(tmp_path: Path):
+    from claude_tap.session_dispatcher import SessionTraceDispatcher
+
+    idx = SessionIndex(tmp_path)
+    d = SessionTraceDispatcher(tmp_path, idx, writer_idle_seconds=0.01)
+    await d.write("idle-sess", {"turn": 1, "request_id": "a"})
+    writer = d._writers[d._slug_for("idle-sess")]
+    assert writer.is_open
+    writer._last_used -= 1.0
+    await d.write("other", {"turn": 1, "request_id": "b"})
+    assert not writer.is_open
+    await d.write("idle-sess", {"turn": 2, "request_id": "c"})
+    assert writer.is_open
+    d.close()
+    idx.close()
+    path = tmp_path / "sessions" / d._slug_for("idle-sess") / "trace.jsonl"
+    assert len(path.read_text(encoding="utf-8").strip().splitlines()) == 2

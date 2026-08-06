@@ -1840,6 +1840,13 @@ async def test_live_viewer_sse_incremental():
 
         try:
             sid = "live-inc-test"
+            async with aiohttp.ClientSession() as session:
+                # Open UI first so subsequent broadcasts are buffered. Author: kejiqing
+                async with session.get(
+                    f"http://127.0.0.1:{port}/records?session={sid}",
+                ) as resp:
+                    assert await resp.json() == []
+
             for i in range(5):
                 await server.broadcast(
                     {
@@ -1879,6 +1886,7 @@ def test_parse_args_new_flags():
     # Defaults
     a = parse_args([])
     assert a.max_traces == 50
+    assert a.max_sessions == 1000
     assert a.no_update_check is False
     assert a.no_auto_update is False
     print("  OK: new flag defaults")
@@ -1887,6 +1895,10 @@ def test_parse_args_new_flags():
     a = parse_args(["--tap-max-traces", "100"])
     assert a.max_traces == 100
     print("  OK: --tap-max-traces 100")
+
+    a = parse_args(["--tap-max-sessions", "200"])
+    assert a.max_sessions == 200
+    print("  OK: --tap-max-sessions 200")
 
     # Unlimited traces
     a = parse_args(["--tap-max-traces", "0"])
