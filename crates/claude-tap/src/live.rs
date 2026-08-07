@@ -141,17 +141,24 @@ fn from_hex(b: u8) -> Option<u8> {
 }
 
 pub async fn handle_index(State(state): State<LiveState>) -> Html<String> {
+    // Inject LIVE_MODE + prefix so Live leaves the offline drop-zone and
+    // loads sessions from disk APIs. Author: kejiqing
     let mut html = VIEWER_HTML.to_string();
-    if !state.prefix_path.is_empty() {
-        let inject = format!(
-            "<script>window.__CLAUDE_TAP_LIVE_PREFIX__={};</script>",
-            serde_json::to_string(&state.prefix_path).unwrap_or_else(|_| "\"\"".into())
-        );
-        if let Some(pos) = html.find("</head>") {
-            html.insert_str(pos, &inject);
-        }
+    let prefix_js =
+        serde_json::to_string(&state.prefix_path).unwrap_or_else(|_| "\"\"".into());
+    let live_js = format!(
+        "const LIVE_MODE = true;\n\
+         const LIVE_PREFIX_PATH = {prefix_js};\n\
+         const EMBEDDED_TRACE_DATA = [];\n\
+         const __TRACE_JSONL_PATH__ = \"\";\n\
+         const __TRACE_HTML_PATH__ = \"\";\n"
+    );
+    let marker = "/* CLAUDETAP_LIVE_CONFIG */\n";
+    if let Some(pos) = html.find(marker) {
+        html.replace_range(pos..pos + marker.len(), &live_js);
+    } else if let Some(pos) = html.find("<script>\nconst $ = s =>") {
+        html.insert_str(pos + "<script>\n".len(), &live_js);
     }
-    // Hint for file-first UX (viewer may already support load-from-API)
     Html(html)
 }
 
@@ -322,6 +329,22 @@ mod tests {
         let idx = Arc::new(SessionIndex::open(dir.path()).unwrap());
         let live = LiveState::new(dir.path(), idx, "foo/");
         assert_eq!(live.prefix_path, "/foo");
+    }
+
+    #[tokio::test]
+    async fn index_injects_live_mode() {
+        let dir = tempdir().unwrap();
+        let idx = Arc::new(SessionIndex::open(dir.path()).unwrap());
+        let live = LiveState::new(dir.path(), idx, "/tap-live/");
+        let Html(html) = handle_index(State(live)).await;
+        assert!(
+            html.contains("const LIVE_MODE = true;"),
+            "live index must enable LIVE_MODE (otherwise drop-zone whiteboard)"
+        );
+        assert!(html.contains("const LIVE_PREFIX_PATH = \"/tap-live\""));
+        assert!(!html.contains("/* CLAUDETAP_LIVE_CONFIG */"));
+        // Raw template must not be served unchanged.
+        assert_ne!(html.len(), VIEWER_HTML.len());
     }
 
     #[tokio::test]
