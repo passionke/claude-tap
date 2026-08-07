@@ -1,6 +1,8 @@
 # Docker Compose deployment
 
-This runs **claude-tap** in `--tap-no-launch` mode: only the proxy and optional live viewer are started inside the container. Install Claude Code / Codex / Cursor on client machines separately.
+This runs **claude-tap** (Rust binary) in `--tap-no-launch` mode: only the proxy and optional live viewer are started inside the container. Install Claude Code / Codex / Cursor on client machines separately.
+
+The image is built from the multi-stage Rust `Dockerfile` (not the Python package). Live history is loaded from disk via the viewer **Load from disk** button; the server does not keep per-session SSE replay buffers in RAM.
 
 ## Environment
 

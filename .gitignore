@@ -6,6 +6,9 @@ dist/
 wheels/
 *.egg-info
 
+# Rust
+/target/
+
 # Local secrets (use .env.example as template)
 .env
 .env.local

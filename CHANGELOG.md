@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Rust rewrite of the Docker/runtime backend (`crates/claude-tap`): reverse + forward proxy, Live viewer, gateway PG mode, JSONL/SQLite traces. Author: kejiqing
+- Multi-stage Rust `Dockerfile` (single static binary). Idle RSS target ≤50MB.
+- `cargo test --workspace` CI job; comprehensive Rust unit tests for allowlist, SSE, session, gateway crypto/auth, Live disk-first invariants, certs, CLI.
+- Live viewer **Load from disk** button; SSE is push-only with no server-side session RAM replay buffer. `CLAUDE_TAP_MAX_SESSIONS` removed as a memory knob.
+- Rust forward proxy MITM: CONNECT → TLS host cert, HTTP/1.1 keep-alive, SSE chunked streaming, bidirectional WebSocket relay (parity with Python `forward_proxy.py`). Author: kejiqing
+
+### Changed
+- Docker Compose / image default runtime is the Rust `claude-tap` binary (Python package remains for scripts/browser tests and transitional local use).
+- **Out of scope (explicit):** PyPI auto-update, Cursor transcript import. Reverse + forward paths aim for Python parity (streaming SSE, WS upgrade, gateway cluster + legacy singleton, export, HTML on exit, disk-backed SSE chunks).
+
 ## [0.0.12] - 2026-08-06
 
 ### Fixed

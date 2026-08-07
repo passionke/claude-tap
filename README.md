@@ -41,6 +41,15 @@ pip install claw-tap
 
 Upgrade: `uv tool upgrade claw-tap` or `pip install --upgrade claw-tap`
 
+### Docker / server runtime (Rust)
+
+Container images and the long-running proxy+live server are built from the **Rust** binary (`crates/claude-tap`). See [docs/rust-backend.md](docs/rust-backend.md) and [docs/deploy-compose.md](docs/deploy-compose.md). Live history is loaded on demand via **Load from disk** (no server-side SSE RAM buffer).
+
+```bash
+cargo build --release -p claude-tap
+# or: docker compose up --build
+```
+
 ## Usage
 
 ### Claude Code
