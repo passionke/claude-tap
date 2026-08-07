@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.15] - 2026-08-07
+
+### Fixed
+- Live `/api/sessions/traces` and Live push strip `sse_events`/`ws_events` (keep counts only); viewer Ajax-loads one turn via `/api/sessions/stream-events` on SSE expand so chunk bodies are not held in browser memory by default. Author: kejiqing
+- CLI/`--version` embeds git tag via `build.rs` (`CLAUDE_TAP_GIT_VERSION` / Docker build-arg) instead of the hardcoded Cargo workspace `0.1.0`. Author: kejiqing
+
 ## [0.0.14] - 2026-08-07
 
 ### Fixed
