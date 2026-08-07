@@ -1,10 +1,12 @@
-# Rust rewrite plan (active)
+---
+status: active
+---
+
+# Rust rewrite plan
 
 Author: kejiqing
 
-Status: **in progress / Docker path complete**
-
-See Cursor plan `rust_backend_rewrite` and [rust-backend.md](../rust-backend.md).
+See [rust-backend.md](../rust-backend.md). Docker/runtime Rust path is in review; transitional Python package retirement remains.
 
 ## Done
 
