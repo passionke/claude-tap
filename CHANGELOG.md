@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.13] - 2026-08-07
+
 ### Added
 - Rust rewrite of the Docker/runtime backend (`crates/claude-tap`): reverse + forward proxy, Live viewer, gateway PG mode, JSONL/SQLite traces. Author: kejiqing
 - Multi-stage Rust `Dockerfile` (single static binary). Idle RSS target ≤50MB.
