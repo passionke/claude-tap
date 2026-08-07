@@ -20,6 +20,14 @@ jobs:
       - run: ruff check .
       - run: ruff format --check .
 
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo test
+        run: cargo test --workspace
+
   screenshot-evidence:
     runs-on: ubuntu-latest
     steps:

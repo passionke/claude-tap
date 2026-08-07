@@ -1,0 +1,58 @@
+# Workspace root for claude-tap Rust rewrite.
+# Author: kejiqing
+[workspace]
+resolver = "2"
+members = ["crates/claude-tap"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["kejiqing"]
+
+[workspace.dependencies]
+anyhow = "1"
+axum = { version = "0.8", features = ["ws", "multipart"] }
+base64 = "0.22"
+bytes = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+futures-util = "0.3"
+hex = "0.4"
+http = "1"
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+aes-gcm = "0.10"
+rcgen = "0.13"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "gzip", "deflate", "brotli"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+rustls = "0.23"
+rustls-pemfile = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha1 = "0.10"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-postgres = "0.7"
+tokio-rustls = "0.26"
+tokio-stream = "0.1"
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
+zstd = "0.13"
+flate2 = "1"
+parking_lot = "0.12"
+dashmap = "6"
+mime_guess = "2"
+http-body-util = "0.1"
+rsa = { version = "0.9", features = ["pem"] }
+x509-parser = "0.16"
+time = "0.3"
+url = "2"
+which = "7"
+tempfile = "3"

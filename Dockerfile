@@ -1,20 +1,20 @@
-# Runtime image for proxy-only + live viewer (see docker-compose.yml).
-ARG PYTHON_BASE_IMAGE=python:3.12-slim-bookworm
-FROM ${PYTHON_BASE_IMAGE}
+# Runtime image: single Rust binary (proxy + live). Author: kejiqing
+# Multi-stage build keeps the runtime image small (idle RSS target ≤50MB).
+ARG RUST_IMAGE=rust:bookworm
+ARG RUNTIME_IMAGE=debian:bookworm-slim
 
+FROM ${RUST_IMAGE} AS builder
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY assets ./assets
+RUN cargo build --release -p claude-tap
+
+FROM ${RUNTIME_IMAGE}
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-
-COPY pyproject.toml README.md ./
-COPY claude_tap ./claude_tap
-
-# setuptools-scm needs a version when .git is not copied into the image.
-ENV SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0+docker
-
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir .
-
-ENV PYTHONUNBUFFERED=1
-
+COPY --from=builder /src/target/release/claude-tap /usr/local/bin/claude-tap
 EXPOSE 8080 3000
-
 CMD ["claude-tap", "--tap-no-launch", "--tap-host", "0.0.0.0", "--tap-port", "8080", "--tap-live", "--tap-live-port", "3000", "--tap-output-dir", "/data/traces", "--tap-no-update-check", "--tap-no-auto-update"]

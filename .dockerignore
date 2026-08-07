@@ -11,3 +11,9 @@ build
 *.egg-info
 terminals
 .cursor
+target
+.traces
+test-traces
+docs/evidence
+*.mp4
+*.webm
