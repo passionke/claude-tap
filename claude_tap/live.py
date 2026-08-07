@@ -110,6 +110,7 @@ class LiveViewerServer:
         app.router.add_get("/api/sessions", self._handle_api_sessions)
         app.router.add_get("/api/sessions/traces", self._handle_api_session_traces)
         app.router.add_get("/api/sessions/full", self._handle_api_session_full)
+        app.router.add_get("/api/sessions/stream-events", self._handle_api_session_stream_events)
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()
@@ -143,11 +144,15 @@ class LiveViewerServer:
         if not sid:
             return
         sid_s = str(sid)
+        # Disk keeps full chunks; Live push strips bodies and keeps counts. Author: kejiqing
+        live_record = copy.deepcopy(record) if isinstance(record, dict) else record
+        if isinstance(live_record, dict):
+            _strip_stream_events_keep_counts(live_record)
 
         async with self._lock:
-            self._buffer_append_if_watched(sid_s, record)
+            self._buffer_append_if_watched(sid_s, live_record)
 
-        data = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+        data = json.dumps(live_record, ensure_ascii=False, separators=(",", ":"))
         message = f"data: {data}\n\n"
 
         disconnected: list[web.StreamResponse] = []
@@ -174,9 +179,12 @@ class LiveViewerServer:
             return web.Response(status=404, text="viewer.html not found")
 
         html = template.read_text(encoding="utf-8")
+        from claude_tap.cli import __version__ as _tap_version
+
         live_js = (
             "const LIVE_MODE = true;\n"
             f"const LIVE_PREFIX_PATH = {json.dumps(self.prefix_path)};\n"
+            f"const __CLAUDE_TAP_VERSION__ = {json.dumps(_tap_version)};\n"
             "const EMBEDDED_TRACE_DATA = [];\n"
             'const __TRACE_JSONL_PATH__ = "";\n'
             'const __TRACE_HTML_PATH__ = "";\n'
@@ -290,9 +298,10 @@ class LiveViewerServer:
         return web.json_response({"sessions": sessions, "total": total, "limit": limit, "offset": offset})
 
     async def _handle_api_session_traces(self, request: web.Request) -> web.Response:
-        """Load JSONL records for one ``claw_session_id`` (query ``session=``).
+        """Load JSONL records for one session; stream chunk bodies stripped (counts kept).
 
         Supports incremental polling via ``since_turn`` (exclusive).
+        Viewer Ajax-loads chunks via ``/api/sessions/stream-events``.
         """
         raw_q = request.rel_url.query.get("session") or request.rel_url.query.get("claw_session_id") or ""
         claw_session_id = unquote(raw_q.strip())
@@ -308,7 +317,11 @@ class LiveViewerServer:
         if since_turn < 0:
             since_turn = 0
 
-        return web.json_response(self._load_session_records(claw_session_id, since_turn=since_turn))
+        records = self._load_session_records(claw_session_id, since_turn=since_turn)
+        for rec in records:
+            if isinstance(rec, dict):
+                _strip_stream_events_keep_counts(rec)
+        return web.json_response(records)
 
     async def _handle_api_session_full(self, request: web.Request) -> web.Response:
         """Load full records for one session while stripping stream event noise."""
@@ -336,8 +349,27 @@ class LiveViewerServer:
             if isinstance(response, dict):
                 response.pop("sse_events", None)
                 response.pop("ws_events", None)
+                response.pop("sse_event_count", None)
+                response.pop("ws_event_count", None)
             filtered.append(clean)
         return web.json_response(filtered)
+
+    async def _handle_api_session_stream_events(self, request: web.Request) -> web.Response:
+        """Ajax: load one turn's sse_events/ws_events from disk. Author: kejiqing"""
+        raw_q = request.rel_url.query.get("session") or request.rel_url.query.get("claw_session_id") or ""
+        claw_session_id = unquote(raw_q.strip())
+        if not claw_session_id:
+            return web.Response(
+                status=400,
+                text="session or claw_session_id query parameter is required",
+            )
+        try:
+            turn = int(request.rel_url.query.get("turn", "0"))
+        except ValueError:
+            turn = 0
+        if turn <= 0:
+            return web.Response(status=400, text="turn query parameter is required")
+        return web.json_response(self._load_stream_events_for_turn(claw_session_id, turn))
 
     def _load_session_records(self, claw_session_id: str, since_turn: int = 0) -> list[dict]:
         """Read one session's JSONL records, optionally filtering by turn."""
@@ -371,3 +403,51 @@ class LiveViewerServer:
         except (OSError, json.JSONDecodeError):
             return []
         return records
+
+    def _load_stream_events_for_turn(self, claw_session_id: str, turn: int) -> dict:
+        """Return sse_events/ws_events for one turn from disk JSONL."""
+        empty: dict = {"turn": turn, "sse_events": [], "ws_events": []}
+        row = self.session_index.get_session(claw_session_id)
+        if not row:
+            return empty
+        path = self.output_dir / row.jsonl_relpath
+        if not path.is_file():
+            return empty
+        try:
+            text = path.read_text(encoding="utf-8")
+            for line in text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                rec = json.loads(line)
+                if not isinstance(rec, dict):
+                    continue
+                try:
+                    turn_i = int(rec.get("turn") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if turn_i != turn:
+                    continue
+                resp = rec.get("response") if isinstance(rec.get("response"), dict) else {}
+                return {
+                    "turn": turn,
+                    "claw_session_id": claw_session_id,
+                    "sse_events": resp.get("sse_events") if isinstance(resp.get("sse_events"), list) else [],
+                    "ws_events": resp.get("ws_events") if isinstance(resp.get("ws_events"), list) else [],
+                }
+        except (OSError, json.JSONDecodeError):
+            return empty
+        return empty
+
+
+def _strip_stream_events_keep_counts(rec: dict) -> None:
+    """Drop bulky stream arrays; keep counts for UI badges. Author: kejiqing"""
+    response = rec.get("response")
+    if not isinstance(response, dict):
+        return
+    sse = response.pop("sse_events", None)
+    if isinstance(sse, list):
+        response["sse_event_count"] = len(sse)
+    ws = response.pop("ws_events", None)
+    if isinstance(ws, list):
+        response["ws_event_count"] = len(ws)

@@ -23,7 +23,7 @@ pub fn generate_html_viewer(trace_path: &Path, html_path: &Path) -> anyhow::Resu
 
     let jsonl_path_js = serde_json::to_string(&trace_path.canonicalize().unwrap_or_else(|_| trace_path.to_path_buf()))?;
     let html_path_js = serde_json::to_string(html_path)?;
-    let version_js = serde_json::to_string(env!("CARGO_PKG_VERSION"))?;
+    let version_js = serde_json::to_string(crate::VERSION)?;
 
     let inject = if records.len() > LAZY_THRESHOLD {
         // Lazy: embed as text/plain lines for progressive parse (simplified parity).

@@ -1,11 +1,12 @@
 //! Live viewer — disk is source of truth; SSE is push-only (no RAM replay).
-//! SSE/stream chunks live on disk as JSONL `response.sse_events` (written by proxy
-//! record path); Live may broadcast each completed record once but never retains a
-//! deque of chunks in RAM. History is loaded on demand via `/api/sessions/traces`.
+//! Stream chunks live on disk as JSONL `response.sse_events` / `ws_events`.
+//! List/poll APIs and Live push strip chunk bodies and keep counts only;
+//! the viewer Ajax-loads one turn's chunks on SSE section expand.
 //! Author: kejiqing
 
 use crate::path_util::normalize_live_prefix_path;
 use crate::session_index::SessionIndex;
+use crate::VERSION;
 use axum::extract::{Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -51,7 +52,9 @@ impl LiveState {
         false
     }
 
-    pub fn broadcast(&self, record: Value) {
+    pub fn broadcast(&self, mut record: Value) {
+        // Disk already has full chunks; Live push must not ship them to the browser.
+        strip_stream_events_keep_counts(&mut record);
         let Some(sid) = record
             .get("claw_session_id")
             .and_then(|v| v.as_str())
@@ -88,13 +91,15 @@ pub struct SessionQuery {
     pub since_turn: Option<i64>,
 }
 
-fn require_session(q: &SessionQuery) -> Result<String, Response> {
-    let raw = q
-        .session
-        .as_deref()
-        .or(q.claw_session_id.as_deref())
-        .unwrap_or("")
-        .trim();
+#[derive(Debug, Deserialize)]
+pub struct StreamEventsQuery {
+    pub session: Option<String>,
+    pub claw_session_id: Option<String>,
+    pub turn: Option<i64>,
+}
+
+fn require_session(q_session: Option<&str>, q_claw: Option<&str>) -> Result<String, Response> {
+    let raw = q_session.or(q_claw).unwrap_or("").trim();
     if raw.is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -106,7 +111,6 @@ fn require_session(q: &SessionQuery) -> Result<String, Response> {
 }
 
 fn urlencoding_decode(s: &str) -> String {
-    // minimal: percent-decode via simple replace of common cases; use form_urlencoded
     percent_decode(s)
 }
 
@@ -116,10 +120,7 @@ fn percent_decode(s: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let (Some(h), Some(l)) = (
-                from_hex(bytes[i + 1]),
-                from_hex(bytes[i + 2]),
-            ) {
+            if let (Some(h), Some(l)) = (from_hex(bytes[i + 1]), from_hex(bytes[i + 2])) {
                 out.push((h << 4) | l);
                 i += 3;
                 continue;
@@ -140,15 +141,39 @@ fn from_hex(b: u8) -> Option<u8> {
     }
 }
 
+/// Replace bulky stream arrays with counts for list/poll/push payloads. Author: kejiqing
+fn strip_stream_events_keep_counts(rec: &mut Value) {
+    let Some(resp) = rec.get_mut("response").and_then(|v| v.as_object_mut()) else {
+        return;
+    };
+    if let Some(Value::Array(arr)) = resp.remove("sse_events") {
+        resp.insert("sse_event_count".into(), json!(arr.len() as u64));
+    }
+    if let Some(Value::Array(arr)) = resp.remove("ws_events") {
+        resp.insert("ws_event_count".into(), json!(arr.len() as u64));
+    }
+}
+
+fn strip_stream_events_hard(rec: &mut Value) {
+    if let Some(resp) = rec.get_mut("response").and_then(|v| v.as_object_mut()) {
+        resp.remove("sse_events");
+        resp.remove("ws_events");
+        resp.remove("sse_event_count");
+        resp.remove("ws_event_count");
+    }
+}
+
 pub async fn handle_index(State(state): State<LiveState>) -> Html<String> {
     // Inject LIVE_MODE + prefix so Live leaves the offline drop-zone and
     // loads sessions from disk APIs. Author: kejiqing
     let mut html = VIEWER_HTML.to_string();
     let prefix_js =
         serde_json::to_string(&state.prefix_path).unwrap_or_else(|_| "\"\"".into());
+    let version_js = serde_json::to_string(VERSION).unwrap_or_else(|_| "\"\"".into());
     let live_js = format!(
         "const LIVE_MODE = true;\n\
          const LIVE_PREFIX_PATH = {prefix_js};\n\
+         const __CLAUDE_TAP_VERSION__ = {version_js};\n\
          const EMBEDDED_TRACE_DATA = [];\n\
          const __TRACE_JSONL_PATH__ = \"\";\n\
          const __TRACE_HTML_PATH__ = \"\";\n"
@@ -166,7 +191,7 @@ pub async fn handle_sse(
     State(state): State<LiveState>,
     Query(q): Query<SessionQuery>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, Response> {
-    let session = require_session(&q)?;
+    let session = require_session(q.session.as_deref(), q.claw_session_id.as_deref())?;
     let mut rx = state.subscribe(&session);
     // No RAM replay on connect — only future records.
     let event_stream = stream! {
@@ -226,28 +251,56 @@ pub async fn handle_api_session_traces(
     State(state): State<LiveState>,
     Query(q): Query<SessionQuery>,
 ) -> Response {
-    let session = match require_session(&q) {
+    let session = match require_session(q.session.as_deref(), q.claw_session_id.as_deref()) {
         Ok(s) => s,
         Err(r) => return r,
     };
     let since = q.since_turn.unwrap_or(0).max(0);
-    Json(load_session_records(&state, &session, since, false)).into_response()
+    // Strip chunk bodies; viewer Ajax-loads on expand. Author: kejiqing
+    Json(load_session_records(&state, &session, since, LoadKind::Traces)).into_response()
 }
 
 pub async fn handle_api_session_full(
     State(state): State<LiveState>,
     Query(q): Query<SessionQuery>,
 ) -> Response {
-    let session = match require_session(&q) {
+    let session = match require_session(q.session.as_deref(), q.claw_session_id.as_deref()) {
         Ok(s) => s,
         Err(r) => return r,
     };
     let since = q.since_turn.unwrap_or(0).max(0);
-    Json(load_session_records(&state, &session, since, true)).into_response()
+    Json(load_session_records(&state, &session, since, LoadKind::FullClean)).into_response()
 }
 
-fn load_session_records(state: &LiveState, claw_session_id: &str, since_turn: i64, strip_stream: bool) -> Vec<Value> {
-    // Disk JSONL includes sse_events (unless strip_stream for /full). Author: kejiqing
+pub async fn handle_api_session_stream_events(
+    State(state): State<LiveState>,
+    Query(q): Query<StreamEventsQuery>,
+) -> Response {
+    let session = match require_session(q.session.as_deref(), q.claw_session_id.as_deref()) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let turn = q.turn.unwrap_or(0);
+    if turn <= 0 {
+        return (StatusCode::BAD_REQUEST, "turn query parameter is required").into_response();
+    }
+    Json(load_stream_events_for_turn(&state, &session, turn)).into_response()
+}
+
+#[derive(Clone, Copy)]
+enum LoadKind {
+    /// List/poll: drop chunk arrays, keep counts for badges.
+    Traces,
+    /// Export JSON: drop stream fields entirely.
+    FullClean,
+}
+
+fn load_session_records(
+    state: &LiveState,
+    claw_session_id: &str,
+    since_turn: i64,
+    kind: LoadKind,
+) -> Vec<Value> {
     let Some(row) = state.session_index.get_session(claw_session_id).ok().flatten() else {
         return vec![];
     };
@@ -264,15 +317,42 @@ fn load_session_records(state: &LiveState, claw_session_id: &str, since_turn: i6
         if turn <= since_turn {
             continue;
         }
-        if strip_stream {
-            if let Some(resp) = rec.get_mut("response").and_then(|v| v.as_object_mut()) {
-                resp.remove("sse_events");
-                resp.remove("ws_events");
-            }
+        match kind {
+            LoadKind::Traces => strip_stream_events_keep_counts(&mut rec),
+            LoadKind::FullClean => strip_stream_events_hard(&mut rec),
         }
         records.push(rec);
     }
     records
+}
+
+fn load_stream_events_for_turn(state: &LiveState, claw_session_id: &str, turn: i64) -> Value {
+    let Some(row) = state.session_index.get_session(claw_session_id).ok().flatten() else {
+        return json!({ "turn": turn, "sse_events": [], "ws_events": [] });
+    };
+    let path = state.output_dir.join(&row.jsonl_relpath);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return json!({ "turn": turn, "sse_events": [], "ws_events": [] });
+    };
+    for line in text.lines() {
+        let Ok(rec) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let t = rec.get("turn").and_then(|v| v.as_i64()).unwrap_or(0);
+        if t != turn {
+            continue;
+        }
+        let resp = rec.get("response").cloned().unwrap_or(json!({}));
+        let sse = resp.get("sse_events").cloned().unwrap_or(json!([]));
+        let ws = resp.get("ws_events").cloned().unwrap_or(json!([]));
+        return json!({
+            "turn": turn,
+            "claw_session_id": claw_session_id,
+            "sse_events": sse,
+            "ws_events": ws,
+        });
+    }
+    json!({ "turn": turn, "sse_events": [], "ws_events": [] })
 }
 
 pub fn live_router(state: LiveState) -> axum::Router {
@@ -283,6 +363,10 @@ pub fn live_router(state: LiveState) -> axum::Router {
         .route("/api/sessions", get(handle_api_sessions))
         .route("/api/sessions/traces", get(handle_api_session_traces))
         .route("/api/sessions/full", get(handle_api_session_full))
+        .route(
+            "/api/sessions/stream-events",
+            get(handle_api_session_stream_events),
+        )
         .with_state(state)
 }
 
@@ -316,9 +400,9 @@ mod tests {
         let t2 = disp.alloc_turn("s1").unwrap();
         disp.write("s1", json!({"turn": t2, "n": 2})).unwrap();
         let live = LiveState::new(dir.path(), idx, "");
-        let all = load_session_records(&live, "s1", 0, false);
+        let all = load_session_records(&live, "s1", 0, LoadKind::Traces);
         assert_eq!(all.len(), 2);
-        let since = load_session_records(&live, "s1", 1, false);
+        let since = load_session_records(&live, "s1", 1, LoadKind::Traces);
         assert_eq!(since.len(), 1);
         assert_eq!(since[0]["n"], 2);
     }
@@ -342,6 +426,7 @@ mod tests {
             "live index must enable LIVE_MODE (otherwise drop-zone whiteboard)"
         );
         assert!(html.contains("const LIVE_PREFIX_PATH = \"/tap-live\""));
+        assert!(html.contains("const __CLAUDE_TAP_VERSION__"));
         assert!(!html.contains("/* CLAUDETAP_LIVE_CONFIG */"));
         // Raw template must not be served unchanged.
         assert_ne!(html.len(), VIEWER_HTML.len());
@@ -353,13 +438,22 @@ mod tests {
         let idx = Arc::new(SessionIndex::open(dir.path()).unwrap());
         let live = LiveState::new(dir.path(), idx, "");
         let mut rx = live.subscribe("s1");
-        live.broadcast(json!({"claw_session_id":"s1","x":1}));
+        live.broadcast(json!({
+            "claw_session_id":"s1",
+            "x":1,
+            "response": {
+                "sse_events": [{"event":"a","data":{}}],
+                "body": {}
+            }
+        }));
         let got = rx.recv().await.unwrap();
         assert_eq!(got["x"], 1);
+        assert!(got["response"].get("sse_events").is_none());
+        assert_eq!(got["response"]["sse_event_count"], 1);
     }
 
     #[test]
-    fn disk_traces_keep_sse_events() {
+    fn traces_strip_sse_events_keep_count() {
         let dir = tempdir().unwrap();
         let idx = Arc::new(SessionIndex::open(dir.path()).unwrap());
         let disp = SessionTraceDispatcher::new(idx.clone());
@@ -377,10 +471,14 @@ mod tests {
         )
         .unwrap();
         let live = LiveState::new(dir.path(), idx, "");
-        let traces = load_session_records(&live, "s1", 0, false);
+        let traces = load_session_records(&live, "s1", 0, LoadKind::Traces);
         assert_eq!(traces.len(), 1);
-        assert!(traces[0]["response"]["sse_events"].is_array());
-        let full = load_session_records(&live, "s1", 0, true);
+        assert!(traces[0]["response"].get("sse_events").is_none());
+        assert_eq!(traces[0]["response"]["sse_event_count"], 1);
+        let full = load_session_records(&live, "s1", 0, LoadKind::FullClean);
         assert!(full[0]["response"].get("sse_events").is_none());
+        assert!(full[0]["response"].get("sse_event_count").is_none());
+        let ev = load_stream_events_for_turn(&live, "s1", t1);
+        assert_eq!(ev["sse_events"].as_array().unwrap().len(), 1);
     }
 }

@@ -2017,8 +2017,7 @@ async function exportSessionFullJson() {
 }
 
 async function onSessionSelectChange(sessionId) {
-  // Auto-load history from disk API on select (Python Live UX parity).
-  // Chunks are NOT kept in server RAM — data comes from /api/sessions/traces JSONL.
+  // Chunks stay on disk; traces API returns counts only. Expand SSE to Ajax-load.
   // Author: kejiqing
   const id = String(sessionId || '').trim();
   const exportBtn = $('#session-export-full');
@@ -3214,14 +3213,22 @@ function renderDetail(e) {
 
   if (respOutput?.content || contextOnly) html += section(t('section_response'), renderResponseContent(respOutput, contextOnly), true);
 
-  const streamEvents = getResponseEvents(e);
-  if (streamEvents.length) html += section(t('section_sse'), renderSSEEvents(streamEvents), false, null, streamEvents.length + ' ' + t('badge_events'));
+  const streamCount = getStreamEventCount(e);
+  if (streamCount > 0) {
+    if (hasLoadedStreamEvents(e)) {
+      html += section(t('section_sse'), renderSSEEvents(getResponseEvents(e)), false, null, streamCount + ' ' + t('badge_events'));
+    } else {
+      html += lazySseSection(e, streamCount);
+    }
+  }
 
   html += section(t('section_json'), `<div class="json-view">${syntaxHL(e)}</div>`, false, JSON.stringify(e, null, 2));
 
   d.innerHTML = html;
   bindSections(d);
   restoreSectionStates();
+  // If SSE was previously open, trigger Ajax load for restored open state. Author: kejiqing
+  void maybeLoadOpenLazySse(d, e);
   if (globalSearchState.open && globalSearchState.query) {
     const target = getTargetForGlobalMatch(globalSearchState.currentMatch);
     const localIndex = target && target.requestId === e.request_id ? target.localIndex : 0;
@@ -3244,6 +3251,72 @@ function getResponseEvents(entry) {
   if (Array.isArray(sse) && sse.length > 0) return sse;
   const ws = entry?.response?.ws_events;
   return Array.isArray(ws) ? ws : [];
+}
+
+function getStreamEventCount(entry) {
+  const loaded = getResponseEvents(entry);
+  if (loaded.length > 0) return loaded.length;
+  const resp = entry?.response || {};
+  const sseN = Number(resp.sse_event_count) || 0;
+  const wsN = Number(resp.ws_event_count) || 0;
+  return sseN || wsN;
+}
+
+function hasLoadedStreamEvents(entry) {
+  return getResponseEvents(entry).length > 0;
+}
+
+function lazySseSection(entry, count) {
+  const sid = esc(String(entry?.claw_session_id || getLiveSessionFilter() || ''));
+  const turn = Number(entry?.turn) || 0;
+  const title = t('section_sse');
+  const badge = count + ' ' + t('badge_events');
+  return `<div class="section" data-lazy-sse="1" data-session="${sid}" data-turn="${turn}">` +
+    `<div class="section-header"><span class="chevron">&#9654;</span><span class="title">${title}</span>` +
+    `<span class="badge">${esc(badge)}</span></div>` +
+    `<div class="section-body"><div class="sse-lazy-hint" style="opacity:.7;font-size:12px;">Loading…</div></div></div>`;
+}
+
+async function fetchStreamEventsForEntry(entry) {
+  if (hasLoadedStreamEvents(entry)) return getResponseEvents(entry);
+  if (typeof LIVE_MODE === 'undefined' || !LIVE_MODE) return [];
+  const sid = String(entry?.claw_session_id || getLiveSessionFilter() || '').trim();
+  const turn = Number(entry?.turn) || 0;
+  if (!sid || turn <= 0) return [];
+  const resp = await fetch(liveUrl('/api/sessions/stream-events?') + new URLSearchParams({
+    session: sid,
+    turn: String(turn),
+  }));
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  const data = await resp.json();
+  if (!entry.response || typeof entry.response !== 'object') entry.response = {};
+  if (Array.isArray(data.sse_events)) entry.response.sse_events = data.sse_events;
+  if (Array.isArray(data.ws_events)) entry.response.ws_events = data.ws_events;
+  return getResponseEvents(entry);
+}
+
+async function fillLazySseSection(sec, entry) {
+  if (!sec || sec.dataset.sseLoaded === '1') return;
+  const body = sec.querySelector('.section-body');
+  if (!body) return;
+  body.innerHTML = `<div class="sse-lazy-hint" style="opacity:.7;font-size:12px;">Loading…</div>`;
+  try {
+    const events = await fetchStreamEventsForEntry(entry);
+    body.innerHTML = events.length ? renderSSEEvents(events) : `<div class="sse-lazy-hint" style="opacity:.7;font-size:12px;">No events</div>`;
+    sec.dataset.sseLoaded = '1';
+  } catch (e) {
+    console.error('Failed to load stream events:', e);
+    body.innerHTML = `<div class="sse-lazy-hint" style="opacity:.7;font-size:12px;color:var(--error,#c44);">Failed to load</div>`;
+  }
+}
+
+async function maybeLoadOpenLazySse(container, entry) {
+  const sec = container && container.querySelector('.section[data-lazy-sse="1"]');
+  if (!sec) return;
+  const body = sec.querySelector('.section-body');
+  if (body && body.classList.contains('open')) {
+    await fillLazySseSection(sec, entry);
+  }
 }
 
 function getEventType(event) {
@@ -3534,8 +3607,14 @@ function bindSections(container) {
         copyToClipboard(text, ev.target);
         return;
       }
-      h.nextElementSibling.classList.toggle('open');
+      const body = h.nextElementSibling;
+      body.classList.toggle('open');
       h.querySelector('.chevron').classList.toggle('open');
+      const sec = h.closest('.section');
+      if (sec && sec.dataset.lazySse === '1' && body.classList.contains('open')) {
+        const entry = filtered[activeIdx];
+        if (entry) void fillLazySseSection(sec, entry._isStub ? getFullEntry(entry) : entry);
+      }
     });
   });
   container.querySelectorAll('.tool-block-header').forEach(h => {
