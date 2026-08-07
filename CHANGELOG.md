@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.14] - 2026-08-07
+
+### Fixed
+- Rust Live `/` now injects `LIVE_MODE` / `LIVE_PREFIX_PATH` into the viewer HTML (raw template was served unchanged → offline drop-zone / blank page). Author: kejiqing
+
 ## [0.0.13] - 2026-08-07
 
 ### Added
