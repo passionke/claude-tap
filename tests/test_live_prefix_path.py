@@ -34,6 +34,7 @@ def test_viewer_html_live_api_uses_live_url_helper() -> None:
     assert "liveUrl('/events?')" in live_block
     assert "liveUrl(`/api/sessions?limit=100" in live_block
     assert "liveUrl('/api/sessions/full?')" in live_block
+    assert "liveUrl('/api/sessions/stream-events?')" in html
     assert not re.search(r"""fetch\(['"`]/api/""", live_block)
     assert "liveUrl('/events?')" in live_block
 

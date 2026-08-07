@@ -4,7 +4,9 @@ use crate::client_config::{client_config, ClientName};
 use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
 
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Runtime/CLI version from git tag (build.rs), not a hardcoded Cargo.toml string.
+/// Author: kejiqing
+pub const VERSION: &str = env!("CLAUDE_TAP_GIT_VERSION");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum ProxyMode {
@@ -230,5 +232,13 @@ mod tests {
     fn parse_extra_args_after_double_dash() {
         let a = parse_tap_args(["claude-tap", "--", "--model", "x"]);
         assert_eq!(a.extra_args, vec!["--model".to_string(), "x".to_string()]);
+    }
+
+    #[test]
+    fn version_comes_from_git_tag_not_cargo_hardcode() {
+        // build.rs embeds CLAUDE_TAP_GIT_VERSION from git describe / env.
+        // Workspace Cargo.toml still says 0.1.0 — CLI must not report that when tags exist.
+        assert!(!VERSION.is_empty());
+        assert_ne!(VERSION, "0.1.0");
     }
 }

@@ -99,6 +99,8 @@ jobs:
         with:
           context: .
           push: true
+          build-args: |
+            CLAUDE_TAP_GIT_VERSION=${{ env.RELEASE_TAG }}
           tags: |
             ghcr.io/${{ github.repository }}:${{ env.RELEASE_TAG }}
             ghcr.io/${{ github.repository }}:${{ env.RELEASE_VERSION }}

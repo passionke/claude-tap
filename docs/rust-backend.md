@@ -26,9 +26,11 @@ cargo test --workspace
 ## Live memory model
 
 - Disk JSONL + SQLite are the source of truth.
-- `/events` SSE pushes **new** records only (no RAM replay on connect).
-- Viewer **Load from disk** loads `/api/sessions/traces` on demand.
+- `/events` SSE pushes **new** records only (no RAM replay on connect); push payloads strip `sse_events`/`ws_events` and keep counts.
+- Viewer **Load from disk** / `/api/sessions/traces` also strip chunk bodies (counts only).
+- Expanding the SSE section Ajax-loads one turn via `/api/sessions/stream-events?session=&turn=`.
 - `CLAUDE_TAP_MAX_SESSIONS` is no longer a memory control.
+- CLI/`--version` uses the git tag via `build.rs` (`CLAUDE_TAP_GIT_VERSION`), not a hardcoded Cargo.toml string.
 
 ## Scope (online / claw-code)
 

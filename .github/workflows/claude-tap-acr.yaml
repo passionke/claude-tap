@@ -119,5 +119,5 @@ jobs:
           file: ./Dockerfile
           push: true
           build-args: |
-            PYTHON_BASE_IMAGE=${{ steps.base_images.outputs.python_image }}
+            CLAUDE_TAP_GIT_VERSION=${{ steps.meta.outputs.release_tag }}
           tags: ${{ steps.meta.outputs.tags }}

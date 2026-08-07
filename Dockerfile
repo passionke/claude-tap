@@ -2,8 +2,12 @@
 # Multi-stage build keeps the runtime image small (idle RSS target ≤50MB).
 ARG RUST_IMAGE=rust:bookworm
 ARG RUNTIME_IMAGE=debian:bookworm-slim
+# Release tag/version for `claude-tap --version` (no .git in image context).
+ARG CLAUDE_TAP_GIT_VERSION=
 
 FROM ${RUST_IMAGE} AS builder
+ARG CLAUDE_TAP_GIT_VERSION
+ENV CLAUDE_TAP_GIT_VERSION=${CLAUDE_TAP_GIT_VERSION}
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
