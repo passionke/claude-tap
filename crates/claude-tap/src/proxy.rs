@@ -1,8 +1,11 @@
 //! Reverse HTTP/SSE/WS proxy. Author: kejiqing
 
 use crate::allowlist::is_allowed_path;
-use crate::claw_session::{extract_from_map, strip_claw_session_header};
+use crate::claw_session::{
+    extract_from_map, extract_turn_from_map, strip_claw_session_header, strip_claw_turn_header,
+};
 use crate::client_config::ClientName;
+use crate::gateway_model_usage::maybe_spawn_insert;
 use crate::gateway_upstream::{apply_gateway_auth_headers, GatewayLlmUpstreamStore};
 use crate::headers::{filter_headers, is_hop_by_hop};
 use crate::session_dispatcher::SessionTraceDispatcher;
@@ -98,8 +101,10 @@ pub async fn proxy_handler(
     };
 
     let claw = extract_from_map(&headers_in);
+    let turn_id = extract_turn_from_map(&headers_in);
     let mut fwd_headers = headers_in.clone();
     strip_claw_session_header(&mut fwd_headers);
+    strip_claw_turn_header(&mut fwd_headers);
 
     let (target, strip) = resolve_upstream(
         &state.target_url,
@@ -189,6 +194,7 @@ pub async fn proxy_handler(
             state,
             claw,
             turn,
+            turn_id,
             req_id,
             method,
             path_and_query,
@@ -215,6 +221,7 @@ pub async fn proxy_handler(
         &state,
         claw.as_deref(),
         turn,
+        turn_id.as_deref(),
         &req_id,
         &method,
         &path_and_query,
@@ -244,6 +251,7 @@ async fn handle_streaming(
     state: ProxyState,
     claw: Option<String>,
     turn: i64,
+    turn_id: Option<String>,
     req_id: String,
     method: Method,
     path: String,
@@ -265,6 +273,7 @@ async fn handle_streaming(
         state,
         claw,
         turn,
+        turn_id,
         req_id,
         method,
         path,
@@ -300,6 +309,7 @@ pub fn streaming_proxy_body<S, E>(
     state: ProxyState,
     claw: Option<String>,
     turn: i64,
+    turn_id: Option<String>,
     req_id: String,
     method: Method,
     path: String,
@@ -326,6 +336,7 @@ where
             &state,
             claw.as_deref(),
             turn,
+            turn_id.as_deref(),
             &req_id,
             &method,
             &path,
@@ -380,6 +391,7 @@ fn maybe_write_record(
     state: &ProxyState,
     claw: Option<&str>,
     turn: i64,
+    turn_id: Option<&str>,
     req_id: &str,
     method: &Method,
     path: &str,
@@ -392,6 +404,15 @@ fn maybe_write_record(
     target: &str,
     started: Instant,
 ) {
+    // Usage billing is keyed by claw-turn-id (independent of session JSONL). Author: kejiqing
+    maybe_spawn_insert(
+        state.gateway.clone(),
+        turn_id,
+        Some(state.client.as_str()),
+        body_json,
+        &resp_body,
+        started.elapsed().as_millis() as i64,
+    );
     let Some(cid) = claw else {
         return;
     };

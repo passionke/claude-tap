@@ -96,6 +96,11 @@ impl GatewayLlmUpstreamStore {
         let rt = self.runtime.read();
         (rt.base_url.clone(), rt.api_key.clone())
     }
+
+    /// PostgreSQL URL for gateway cluster DB (usage inserts, etc.). Author: kejiqing
+    pub fn database_url(&self) -> &str {
+        &self.database_url
+    }
 }
 
 async fn load_active_runtime(
