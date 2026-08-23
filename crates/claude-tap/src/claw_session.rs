@@ -1,10 +1,13 @@
-//! claw-session-id helpers. Author: kejiqing
+//! claw-session-id / claw-turn-id helpers. Author: kejiqing
 
 use regex::Regex;
 use sha2::{Digest, Sha256};
 use std::sync::OnceLock;
 
 pub const CLAW_SESSION_HEADER: &str = "claw-session-id";
+/// Gateway turn id (`T_…`). When present, observe tap records `gateway_model_usage`.
+/// Missing → proxy normally, no usage INSERT. Author: kejiqing
+pub const CLAW_TURN_HEADER: &str = "claw-turn-id";
 const MAX_SLUG_LEN: usize = 48;
 
 fn sanitize_re() -> &'static Regex {
@@ -38,6 +41,34 @@ pub fn extract_from_map(headers: &std::collections::HashMap<String, String>) -> 
 
 pub fn strip_claw_session_header(headers: &mut std::collections::HashMap<String, String>) {
     headers.retain(|k, _| !k.eq_ignore_ascii_case(CLAW_SESSION_HEADER));
+}
+
+pub fn extract_claw_turn_id(headers: &[(impl AsRef<str>, impl AsRef<str>)]) -> Option<String> {
+    for (k, v) in headers {
+        if k.as_ref().eq_ignore_ascii_case(CLAW_TURN_HEADER) {
+            let s = v.as_ref().trim();
+            if !s.is_empty() {
+                return Some(s.to_string());
+            }
+        }
+    }
+    None
+}
+
+pub fn extract_turn_from_map(headers: &std::collections::HashMap<String, String>) -> Option<String> {
+    for (k, v) in headers {
+        if k.eq_ignore_ascii_case(CLAW_TURN_HEADER) {
+            let s = v.trim();
+            if !s.is_empty() {
+                return Some(s.to_string());
+            }
+        }
+    }
+    None
+}
+
+pub fn strip_claw_turn_header(headers: &mut std::collections::HashMap<String, String>) {
+    headers.retain(|k, _| !k.eq_ignore_ascii_case(CLAW_TURN_HEADER));
 }
 
 pub fn sanitize_filename_suffix(raw: &str) -> String {
@@ -96,6 +127,19 @@ mod tests {
         strip_claw_session_header(&mut map);
         assert!(!map.contains_key("claw-session-id"));
         assert!(map.contains_key("Authorization"));
+    }
+
+    #[test]
+    fn extract_and_strip_turn() {
+        let headers = vec![("Claw-Turn-Id", " T_abc "), ("X-Other", "1")];
+        assert_eq!(extract_claw_turn_id(&headers).as_deref(), Some("T_abc"));
+        let mut map = std::collections::HashMap::from([
+            ("claw-turn-id".into(), "T_1".into()),
+            ("claw-session-id".into(), "S_1".into()),
+        ]);
+        strip_claw_turn_header(&mut map);
+        assert!(!map.contains_key("claw-turn-id"));
+        assert!(map.contains_key("claw-session-id"));
     }
 
     #[test]

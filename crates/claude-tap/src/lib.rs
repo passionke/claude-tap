@@ -10,6 +10,7 @@ pub mod cluster_identity;
 pub mod export;
 pub mod forward_proxy;
 pub mod gateway_llm;
+pub mod gateway_model_usage;
 pub mod gateway_upstream;
 pub mod headers;
 pub mod health;

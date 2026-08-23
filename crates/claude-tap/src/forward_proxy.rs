@@ -5,7 +5,10 @@
 //! TLS is accepted directly on the client socket (no localhost bounce).
 
 use crate::certs::CertificateAuthority;
-use crate::claw_session::{extract_from_map, strip_claw_session_header};
+use crate::claw_session::{
+    extract_from_map, extract_turn_from_map, strip_claw_session_header, strip_claw_turn_header,
+};
+use crate::gateway_model_usage::maybe_spawn_insert;
 use crate::client_config::ClientName;
 use crate::gateway_upstream::{apply_gateway_auth_headers, GatewayLlmUpstreamStore};
 use crate::headers::{filter_headers, is_hop_by_hop};
@@ -199,6 +202,7 @@ impl ForwardProxyServer {
         }
 
         let claw = extract_from_map(&headers);
+        let turn_id = extract_turn_from_map(&headers);
         let turn = if let Some(ref cid) = claw {
             self.dispatcher.alloc_turn(cid).unwrap_or(0)
         } else {
@@ -231,6 +235,7 @@ impl ForwardProxyServer {
 
         let mut fwd_headers = headers.clone();
         strip_claw_session_header(&mut fwd_headers);
+        strip_claw_turn_header(&mut fwd_headers);
         if let Some(g) = &self.gateway {
             let (_, key) = g.target_and_key();
             apply_gateway_auth_headers(&mut fwd_headers, self.client, key.as_deref());
@@ -274,6 +279,7 @@ impl ForwardProxyServer {
                 client,
                 &req_id,
                 turn,
+                turn_id.as_deref(),
                 started,
                 method,
                 path,
@@ -293,6 +299,7 @@ impl ForwardProxyServer {
                 client,
                 &req_id,
                 turn,
+                turn_id.as_deref(),
                 started,
                 method,
                 path,
@@ -316,6 +323,7 @@ impl ForwardProxyServer {
         client: &mut S,
         req_id: &str,
         turn: i64,
+        turn_id: Option<&str>,
         started: Instant,
         method: &str,
         path: &str,
@@ -385,8 +393,11 @@ impl ForwardProxyServer {
             .collect();
         write_http_record(
             &self.dispatcher,
+            self.gateway.clone(),
             claw,
             turn,
+            turn_id,
+            Some(self.client.as_str()),
             req_id,
             duration_ms,
             method,
@@ -408,6 +419,7 @@ impl ForwardProxyServer {
         client: &mut S,
         req_id: &str,
         turn: i64,
+        turn_id: Option<&str>,
         started: Instant,
         method: &str,
         path: &str,
@@ -433,8 +445,11 @@ impl ForwardProxyServer {
 
         write_http_record(
             &self.dispatcher,
+            self.gateway.clone(),
             claw,
             turn,
+            turn_id,
+            Some(self.client.as_str()),
             req_id,
             duration_ms,
             method,
@@ -493,6 +508,7 @@ impl ForwardProxyServer {
 
         let mut fwd_headers = headers.clone();
         strip_claw_session_header(&mut fwd_headers);
+        strip_claw_turn_header(&mut fwd_headers);
         if let Some(g) = &self.gateway {
             let (_, key) = g.target_and_key();
             apply_gateway_auth_headers(&mut fwd_headers, self.client, key.as_deref());
@@ -733,8 +749,11 @@ async fn relay_forward_websocket<S>(
 
 fn write_http_record(
     dispatcher: &SessionTraceDispatcher,
+    gateway: Option<Arc<GatewayLlmUpstreamStore>>,
     claw: Option<&str>,
     turn: i64,
+    turn_id: Option<&str>,
+    provider: Option<&str>,
     req_id: &str,
     duration_ms: u64,
     method: &str,
@@ -747,6 +766,14 @@ fn write_http_record(
     sse_events: Option<Vec<Value>>,
     upstream_base: &str,
 ) {
+    maybe_spawn_insert(
+        gateway,
+        turn_id,
+        provider,
+        req_body,
+        &resp_body,
+        duration_ms as i64,
+    );
     let Some(cid) = claw else {
         return;
     };
