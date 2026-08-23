@@ -118,6 +118,9 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
+          # Aliyun ACR rejects buildx attestation manifests (oci.empty.v1+json). Author: kejiqing
+          provenance: false
+          sbom: false
           build-args: |
             CLAUDE_TAP_GIT_VERSION=${{ steps.meta.outputs.release_tag }}
           tags: ${{ steps.meta.outputs.tags }}
