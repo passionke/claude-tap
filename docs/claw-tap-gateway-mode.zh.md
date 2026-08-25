@@ -7,7 +7,9 @@ Author: kejiqing
 ## 概览
 
 - Tap **直连与 http-gateway-rs 相同的 PostgreSQL**（不经 gateway HTTP）。
-- 定时从 PG 重载当前 LLM（`gateway_llm_cluster_state` + `gateway_llm_cluster_revision`，按 `CLAW_CLUSTER_ID`）。
+- 定时从 PG 重载当前 LLM：
+  - **全局 observe**（未设 `CLAW_PROJ_ID`）：`gateway_llm_cluster_*`，按 `CLAW_CLUSTER_ID`
+  - **项目 observe**（设了 `CLAW_PROJ_ID`）：`gateway_llm_project_*`，按 `(CLAW_CLUSTER_ID, CLAW_PROJ_ID)`
 - 将 OpenAI 兼容流量代理到配置的下游 LLM base URL。
 - **不使用** `--tap-target`、`OPENAI_BASE_URL`、`UPSTREAM_OPENAI_BASE_URL`，也不使用 `--tap-upstream-config` / `claw-tap-upstream.json`。
 - PG 无 active model 时 tap 拒绝启动，`/healthz` 返回 `ok: false`。
@@ -19,7 +21,8 @@ Author: kejiqing
 
 | 来源 | 表 / 字段 |
 |------|-----------|
-| Cluster 表（推荐） | `gateway_llm_cluster_model.api_key_ciphertext`（AES-GCM，以 `cluster_id` 为密钥） |
+| Cluster 表（全局 observe） | `gateway_llm_cluster_model.api_key_ciphertext`（AES-GCM，以 `cluster_id` 为密钥） |
+| Project 表（项目 observe，`CLAW_PROJ_ID`） | `gateway_llm_project_model.api_key_ciphertext`（同一 AES-GCM） |
 | Legacy 单例表 | `gateway_global_settings.llm_model_api_keys_json` |
 
 转发 HTTP / WebSocket 到上游 LLM 时：
@@ -46,6 +49,7 @@ Author: kejiqing
 |------|------|------|
 | `CLAW_CLUSTER_ID` | 是 | 集群标识，须与 http-gateway-rs 一致 |
 | `CLAW_GATEWAY_DATABASE_URL` | 是 | PostgreSQL 连接串（与 gateway 相同） |
+| `CLAW_PROJ_ID` | 否 | 项目 observe 沙箱必填；≥1 时读 `gateway_llm_project_*` |
 | `CLAW_GATEWAY_LLM_CONFIG_POLL_INTERVAL_SECS` | 否 | 上游 URL 与 API key 刷新间隔（默认 `30`） |
 | `CLAUDE_TAP_PORT` | 否 | 代理监听端口（默认 `8080`） |
 

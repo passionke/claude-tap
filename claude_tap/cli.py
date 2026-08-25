@@ -25,6 +25,7 @@ from claude_tap.cluster_identity import (
     claw_gateway_env_configured,
     gateway_cluster_id_from_env,
     gateway_database_url_from_env,
+    gateway_proj_id_from_env,
     local_cluster_identity,
 )
 from claude_tap.cursor_transcript import import_cursor_transcripts
@@ -423,11 +424,20 @@ async def async_main(args: argparse.Namespace):
         if claw_gateway_env_configured():
             cluster_id = gateway_cluster_id_from_env()
             database_url = gateway_database_url_from_env()
+            try:
+                proj_id = gateway_proj_id_from_env()
+            except ValueError as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                await session.close()
+                if live_server:
+                    await live_server.stop()
+                return 1
             claw_cluster_identity = local_cluster_identity(cluster_id, database_url)
             gateway_upstream_store = GatewayLlmUpstreamStore(
                 client=args.client,
                 database_url=database_url,
                 cluster_id=cluster_id,
+                proj_id=proj_id,
             )
             try:
                 gateway_upstream_store.load_initial()

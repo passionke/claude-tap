@@ -1,9 +1,12 @@
 """Tests for clawTap cluster identity (byte-compatible with http-gateway-rs). Author: kejiqing"""
 
+import pytest
+
 from claude_tap.cluster_identity import (
     compute_cluster_hash,
     health_json_body,
     local_cluster_identity,
+    parse_gateway_proj_id,
     parse_pg_url,
     validate_cluster_id,
 )
@@ -27,14 +30,16 @@ def test_validate_cluster_id_format():
     validate_cluster_id("prod-claw-01")
     try:
         validate_cluster_id("")
-        assert False, "expected error"
     except ValueError:
         pass
+    else:
+        assert False, "expected error"
     try:
         validate_cluster_id("bad id")
-        assert False, "expected error"
     except ValueError:
         pass
+    else:
+        assert False, "expected error"
 
 
 def test_local_cluster_identity_matches_gateway_example():
@@ -61,3 +66,22 @@ def test_postgresql_scheme_accepted():
     parts = parse_pg_url("postgresql://u:p@db.example.com/mydb")
     assert parts.scheme == "postgresql"
     assert parts.port == 5432
+
+
+def test_parse_gateway_proj_id_empty_is_none():
+    assert parse_gateway_proj_id("") is None
+    assert parse_gateway_proj_id("  ") is None
+
+
+def test_parse_gateway_proj_id_accepts_positive():
+    assert parse_gateway_proj_id("297") == 297
+    assert parse_gateway_proj_id(" 1 ") == 1
+
+
+def test_parse_gateway_proj_id_rejects_zero_and_invalid():
+    with pytest.raises(ValueError):
+        parse_gateway_proj_id("0")
+    with pytest.raises(ValueError):
+        parse_gateway_proj_id("-3")
+    with pytest.raises(ValueError):
+        parse_gateway_proj_id("abc")

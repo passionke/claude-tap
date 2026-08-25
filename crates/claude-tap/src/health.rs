@@ -38,6 +38,7 @@ mod tests {
         let store = Arc::new(GatewayLlmUpstreamStore::new(
             "local-dev".into(),
             "postgres://claw_gateway:p@postgres:5432/claw_gateway".into(),
+            None,
         ));
         let (status, Json(body)) = healthz_response(Some(&id), Some(&store));
         assert_eq!(status, StatusCode::OK);
@@ -55,6 +56,7 @@ mod tests {
         let store = Arc::new(GatewayLlmUpstreamStore::new(
             "local-dev".into(),
             "postgres://claw_gateway:p@postgres:5432/claw_gateway".into(),
+            None,
         ));
         store.set_runtime_for_test(GatewayLlmRuntime {
             base_url: "https://x".into(),

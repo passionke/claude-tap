@@ -48,12 +48,23 @@ def gateway_llm_poll_interval_seconds() -> float:
 
 
 class GatewayLlmUpstreamStore:
-    """Upstream from ``gateway_llm_cluster_*`` only — no ``--tap-target`` / ``.env`` fallback."""
+    """Upstream from PG: project tables when ``proj_id`` set, else ``gateway_llm_cluster_*``.
 
-    def __init__(self, *, client: str, database_url: str, cluster_id: str) -> None:
+    Author: kejiqing
+    """
+
+    def __init__(
+        self,
+        *,
+        client: str,
+        database_url: str,
+        cluster_id: str,
+        proj_id: int | None = None,
+    ) -> None:
         self.client = client
         self.database_url = database_url
         self.cluster_id = cluster_id.strip()
+        self.proj_id = proj_id if proj_id is not None and proj_id >= 1 else None
         self._runtime: ActiveLlmRuntime | None = None
         self._snapshot: UpstreamSnapshot | None = None
 
@@ -64,26 +75,40 @@ class GatewayLlmUpstreamStore:
     def is_ready(self) -> bool:
         return self._runtime is not None and self._snapshot is not None
 
+    def _scope_label(self) -> str:
+        if self.proj_id is not None:
+            return f"cluster {self.cluster_id!r} proj_id={self.proj_id}"
+        return f"cluster {self.cluster_id!r}"
+
+    def _missing_tables_hint(self) -> str:
+        if self.proj_id is not None:
+            return f"tables gateway_llm_project_state / gateway_llm_project_revision (CLAW_PROJ_ID={self.proj_id})"
+        return "tables gateway_llm_cluster_state / gateway_llm_cluster_revision"
+
     def snapshot(self) -> UpstreamSnapshot:
         if self._snapshot is None:
             raise GatewayLlmConfigError(
-                f"No active LLM loaded for cluster {self.cluster_id!r}; "
+                f"No active LLM loaded for {self._scope_label()}; "
                 "tap will not proxy until PostgreSQL has an applied model."
             )
         return self._snapshot
 
+    def _fetch(self) -> ActiveLlmRuntime | None:
+        return fetch_active_llm_runtime(self.database_url, self.cluster_id, proj_id=self.proj_id)
+
     def load_initial(self) -> ActiveLlmRuntime:
-        runtime = fetch_active_llm_runtime(self.database_url, self.cluster_id)
+        runtime = self._fetch()
         if runtime is None:
             raise GatewayLlmConfigError(
-                f"No active LLM for cluster {self.cluster_id!r} in PostgreSQL "
-                "(tables gateway_llm_cluster_state / gateway_llm_cluster_revision). "
+                f"No active LLM for {self._scope_label()} in PostgreSQL "
+                f"({self._missing_tables_hint()}). "
                 "Apply a model in gateway Admin. "
                 "Tap ignores --tap-target, OPENAI_BASE_URL, and UPSTREAM_OPENAI_BASE_URL in this mode."
             )
         self._apply_runtime(runtime)
         log.info(
-            "Upstream from PostgreSQL: %s (model=%s %s)",
+            "Upstream from PostgreSQL (%s): %s (model=%s %s)",
+            self._scope_label(),
             runtime.base_model_url,
             runtime.model_id,
             runtime.model_name,
@@ -91,22 +116,26 @@ class GatewayLlmUpstreamStore:
         return runtime
 
     def reload_from_db(self) -> bool:
-        runtime = fetch_active_llm_runtime(self.database_url, self.cluster_id)
+        runtime = self._fetch()
         if runtime is None:
             if self._runtime is None:
-                log.error("PostgreSQL active LLM still missing for cluster %s", self.cluster_id)
+                log.error("PostgreSQL active LLM still missing for %s", self._scope_label())
             else:
                 log.warning(
-                    "PostgreSQL active LLM unavailable for cluster %s; keeping %s",
-                    self.cluster_id,
+                    "PostgreSQL active LLM unavailable for %s; keeping %s",
+                    self._scope_label(),
                     self._runtime.base_model_url,
                 )
             return False
         previous = self._runtime.base_model_url if self._runtime else ""
+        prev_key = self._runtime.api_key if self._runtime else ""
+        prev_model = self._runtime.model_name if self._runtime else ""
         self._apply_runtime(runtime)
-        if runtime.base_model_url != previous:
+        changed = runtime.base_model_url != previous or runtime.api_key != prev_key or runtime.model_name != prev_model
+        if changed:
             log.info(
-                "Upstream from PostgreSQL -> %s (model=%s)",
+                "Upstream from PostgreSQL (%s) -> %s (model=%s)",
+                self._scope_label(),
                 runtime.base_model_url,
                 runtime.model_name,
             )

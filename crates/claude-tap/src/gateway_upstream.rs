@@ -13,6 +13,11 @@ use std::time::Duration;
 pub const DEFAULT_POLL_SECS: f64 = 30.0;
 pub const POLL_INTERVAL_ENV: &str = "CLAW_GATEWAY_LLM_CONFIG_POLL_INTERVAL_SECS";
 
+/// Project observe (`CLAW_PROJ_ID` ≥ 1) uses `gateway_llm_project_*`; else cluster. Author: kejiqing
+pub fn gateway_llm_uses_project_tables(proj_id: Option<i64>) -> bool {
+    matches!(proj_id, Some(id) if id >= 1)
+}
+
 pub fn gateway_llm_poll_interval_seconds() -> f64 {
     let raw = std::env::var(POLL_INTERVAL_ENV).unwrap_or_default();
     let v: f64 = raw.trim().parse().unwrap_or(DEFAULT_POLL_SECS);
@@ -46,16 +51,28 @@ pub fn apply_gateway_auth_headers(
 pub struct GatewayLlmUpstreamStore {
     cluster_id: String,
     database_url: String,
+    /// When set (≥1), load `gateway_llm_project_*` instead of cluster tables.
+    proj_id: Option<i64>,
     runtime: RwLock<GatewayLlmRuntime>,
 }
 
 impl GatewayLlmUpstreamStore {
-    pub fn new(cluster_id: String, database_url: String) -> Self {
+    pub fn new(cluster_id: String, database_url: String, proj_id: Option<i64>) -> Self {
+        let proj_id = if gateway_llm_uses_project_tables(proj_id) {
+            proj_id
+        } else {
+            None
+        };
         Self {
             cluster_id,
             database_url,
+            proj_id,
             runtime: RwLock::new(GatewayLlmRuntime::default()),
         }
+    }
+
+    pub fn proj_id(&self) -> Option<i64> {
+        self.proj_id
     }
 
     pub fn is_ready(&self) -> bool {
@@ -72,7 +89,7 @@ impl GatewayLlmUpstreamStore {
 
     /// Load active model from PG. On miss after initial load, keeps previous runtime.
     pub async fn reload_from_db(&self) -> anyhow::Result<bool> {
-        match load_active_runtime(&self.database_url, &self.cluster_id).await {
+        match load_active_runtime(&self.database_url, &self.cluster_id, self.proj_id).await {
             Ok(Some(rt)) => {
                 *self.runtime.write() = rt;
                 Ok(true)
@@ -106,6 +123,7 @@ impl GatewayLlmUpstreamStore {
 async fn load_active_runtime(
     database_url: &str,
     cluster_id: &str,
+    proj_id: Option<i64>,
 ) -> anyhow::Result<Option<GatewayLlmRuntime>> {
     let (client, connection) = tokio_postgres::connect(database_url, tokio_postgres::NoTls).await?;
     tokio::spawn(async move {
@@ -119,6 +137,85 @@ async fn load_active_runtime(
         return Ok(None);
     }
 
+    if let Some(pid) = proj_id.filter(|&id| gateway_llm_uses_project_tables(Some(id))) {
+        return load_active_project_runtime(&client, cluster_id, pid).await;
+    }
+
+    load_active_cluster_runtime(&client, cluster_id).await
+}
+
+/// observe-proj: `CLAW_PROJ_ID` → `gateway_llm_project_*`. Author: kejiqing
+async fn load_active_project_runtime(
+    client: &tokio_postgres::Client,
+    cluster_id: &str,
+    proj_id: i64,
+) -> anyhow::Result<Option<GatewayLlmRuntime>> {
+    let state = client
+        .query_opt(
+            r#"
+            SELECT active_model_id, active_model_rev
+              FROM gateway_llm_project_state
+             WHERE cluster_id = $1 AND proj_id = $2
+            "#,
+            &[&cluster_id, &proj_id],
+        )
+        .await?;
+
+    let Some(row) = state else {
+        tracing::warn!("No gateway_llm_project_state for cluster={cluster_id} proj_id={proj_id}");
+        return Ok(None);
+    };
+    let active_id: String = row.get::<_, Option<String>>(0).unwrap_or_default();
+    let active_rev: String = row.get::<_, Option<String>>(1).unwrap_or_default();
+    let active_id = active_id.trim().to_string();
+    let active_rev = active_rev.trim().to_string();
+    if active_id.is_empty() || active_rev.is_empty() {
+        tracing::warn!("Empty active project LLM for cluster={cluster_id} proj_id={proj_id}");
+        return Ok(None);
+    }
+
+    let rev_row = client
+        .query_opt(
+            r#"
+            SELECT base_model_url, model_name
+              FROM gateway_llm_project_revision
+             WHERE cluster_id = $1 AND proj_id = $2
+               AND model_id = $3 AND model_rev = $4
+            "#,
+            &[&cluster_id, &proj_id, &active_id, &active_rev],
+        )
+        .await?;
+
+    let Some(rev_row) = rev_row else {
+        tracing::warn!(
+            "Missing gateway_llm_project_revision for cluster={cluster_id} proj_id={proj_id} model={active_id} rev={active_rev}"
+        );
+        return Ok(None);
+    };
+
+    let rev_base: String = rev_row.get::<_, Option<String>>(0).unwrap_or_default();
+    let rev_name: String = rev_row.get::<_, Option<String>>(1).unwrap_or_default();
+
+    let model_row = client
+        .query_opt(
+            r#"
+            SELECT api_key_ciphertext, base_model_url, model_name
+              FROM gateway_llm_project_model
+             WHERE cluster_id = $1 AND proj_id = $2 AND model_id = $3
+            "#,
+            &[&cluster_id, &proj_id, &active_id],
+        )
+        .await?;
+
+    let (api_key, base_url, model_name) =
+        runtime_fields_from_rows(cluster_id, &rev_base, &rev_name, model_row.as_ref());
+    Ok(runtime_from_revision(&base_url, &model_name, &api_key))
+}
+
+async fn load_active_cluster_runtime(
+    client: &tokio_postgres::Client,
+    cluster_id: &str,
+) -> anyhow::Result<Option<GatewayLlmRuntime>> {
     // Cluster state first; missing/empty → legacy singleton (Python parity). Author: kejiqing
     let state = client
         .query_opt(
@@ -138,12 +235,12 @@ async fn load_active_runtime(
             (id.trim().to_string(), rev.trim().to_string())
         }
         None => {
-            return Ok(load_active_llm_runtime_legacy(&client).await?);
+            return Ok(load_active_llm_runtime_legacy(client).await?);
         }
     };
 
     if active_id.is_empty() || active_rev.is_empty() {
-        return Ok(load_active_llm_runtime_legacy(&client).await?);
+        return Ok(load_active_llm_runtime_legacy(client).await?);
     }
 
     let rev_row = client
@@ -178,7 +275,18 @@ async fn load_active_runtime(
         )
         .await?;
 
-    let (api_key, base_url, model_name) = if let Some(m) = model_row {
+    let (api_key, base_url, model_name) =
+        runtime_fields_from_rows(cluster_id, &rev_base, &rev_name, model_row.as_ref());
+    Ok(runtime_from_revision(&base_url, &model_name, &api_key))
+}
+
+fn runtime_fields_from_rows(
+    cluster_id: &str,
+    rev_base: &str,
+    rev_name: &str,
+    model_row: Option<&tokio_postgres::Row>,
+) -> (String, String, String) {
+    if let Some(m) = model_row {
         let ciphertext: Option<String> = m.get(0);
         let api_key = ciphertext
             .as_deref()
@@ -187,21 +295,19 @@ async fn load_active_runtime(
         let model_base: String = m.get::<_, Option<String>>(1).unwrap_or_default();
         let model_name_fb: String = m.get::<_, Option<String>>(2).unwrap_or_default();
         let base_url = if !rev_base.is_empty() {
-            rev_base
+            rev_base.to_string()
         } else {
             model_base
         };
         let model_name = if !rev_name.is_empty() {
-            rev_name
+            rev_name.to_string()
         } else {
             model_name_fb
         };
         (api_key, base_url, model_name)
     } else {
-        (String::new(), rev_base, rev_name)
-    };
-
-    Ok(runtime_from_revision(&base_url, &model_name, &api_key))
+        (String::new(), rev_base.to_string(), rev_name.to_string())
+    }
 }
 
 /// Pre-cluster schema fallback (singleton `gateway_global_settings`).
@@ -338,7 +444,7 @@ mod tests {
 
     #[test]
     fn store_ready_after_set() {
-        let s = GatewayLlmUpstreamStore::new("c".into(), "postgres://u:p@h/db".into());
+        let s = GatewayLlmUpstreamStore::new("c".into(), "postgres://u:p@h/db".into(), None);
         assert!(!s.is_ready());
         s.set_runtime_for_test(GatewayLlmRuntime {
             base_url: "https://api.example.com".into(),
@@ -346,6 +452,25 @@ mod tests {
             api_key: Some("k".into()),
         });
         assert!(s.is_ready());
+    }
+
+    #[test]
+    fn store_keeps_proj_id() {
+        let s = GatewayLlmUpstreamStore::new("c".into(), "postgres://u:p@h/db".into(), Some(297));
+        assert_eq!(s.proj_id(), Some(297));
+        let s0 = GatewayLlmUpstreamStore::new("c".into(), "postgres://u:p@h/db".into(), Some(0));
+        assert_eq!(s0.proj_id(), None);
+        let sn = GatewayLlmUpstreamStore::new("c".into(), "postgres://u:p@h/db".into(), None);
+        assert_eq!(sn.proj_id(), None);
+    }
+
+    #[test]
+    fn uses_project_tables_only_when_proj_id_ge_1() {
+        assert!(gateway_llm_uses_project_tables(Some(297)));
+        assert!(gateway_llm_uses_project_tables(Some(1)));
+        assert!(!gateway_llm_uses_project_tables(None));
+        assert!(!gateway_llm_uses_project_tables(Some(0)));
+        assert!(!gateway_llm_uses_project_tables(Some(-1)));
     }
 
     #[test]
