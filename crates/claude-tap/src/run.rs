@@ -5,7 +5,7 @@ use crate::cli::{ProxyMode, TapArgs};
 use crate::client_config::{build_client_env, client_config, ClientName};
 use crate::cluster_identity::{
     claw_gateway_env_configured, gateway_cluster_id_from_env, gateway_database_url_from_env,
-    local_cluster_identity, ClusterIdentity,
+    gateway_proj_id_from_env, local_cluster_identity, ClusterIdentity,
 };
 use crate::gateway_upstream::{
     gateway_llm_poll_interval_seconds, poll_gateway_llm_upstream, GatewayLlmUpstreamStore,
@@ -47,10 +47,16 @@ pub async fn async_main(args: TapArgs) -> anyhow::Result<i32> {
     if gateway_mode {
         let cid = gateway_cluster_id_from_env().map_err(anyhow::Error::msg)?;
         let db = gateway_database_url_from_env().map_err(anyhow::Error::msg)?;
+        let proj_id = gateway_proj_id_from_env().map_err(anyhow::Error::msg)?;
         identity = Some(local_cluster_identity(&cid, &db).map_err(anyhow::Error::msg)?);
-        let store = Arc::new(GatewayLlmUpstreamStore::new(cid, db));
+        let store = Arc::new(GatewayLlmUpstreamStore::new(cid, db, proj_id));
         store.reload_from_db().await?;
         if !store.is_ready() {
+            if let Some(pid) = proj_id {
+                anyhow::bail!(
+                    "claw-tap: no active LLM in PostgreSQL for cluster proj_id={pid} (gateway_llm_project_*)"
+                );
+            }
             anyhow::bail!("claw-tap: no active LLM in PostgreSQL for this cluster");
         }
         let poll = gateway_llm_poll_interval_seconds();

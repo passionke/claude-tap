@@ -7,7 +7,9 @@ When `CLAW_CLUSTER_ID` and `CLAW_GATEWAY_DATABASE_URL` are set (same values as h
 ## Overview
 
 - Tap **connects to the same PostgreSQL** as http-gateway-rs (not via gateway HTTP).
-- On a timer it reloads the active LLM from PG (`gateway_llm_cluster_state` + `gateway_llm_cluster_revision` for `CLAW_CLUSTER_ID`).
+- On a timer it reloads the active LLM from PG:
+  - **Global observe** (no `CLAW_PROJ_ID`): `gateway_llm_cluster_*` by `CLAW_CLUSTER_ID`
+  - **Project observe** (`CLAW_PROJ_ID` set): `gateway_llm_project_*` by `(CLAW_CLUSTER_ID, CLAW_PROJ_ID)`
 - Tap proxies OpenAI-compatible traffic to the configured downstream LLM base URL.
 - **Does not** use `--tap-target`, `OPENAI_BASE_URL`, `UPSTREAM_OPENAI_BASE_URL`, or `--tap-upstream-config` / `claw-tap-upstream.json`.
 - If PG has no active model, tap refuses to start and `/healthz` returns `ok: false`.
@@ -19,7 +21,8 @@ Since **v0.0.11**, the upstream LLM API key is **managed in PostgreSQL**, not by
 
 | Source | Table / column |
 |--------|----------------|
-| Cluster schema (preferred) | `gateway_llm_cluster_model.api_key_ciphertext` (AES-GCM, keyed by `cluster_id`) |
+| Cluster schema (global observe) | `gateway_llm_cluster_model.api_key_ciphertext` (AES-GCM, keyed by `cluster_id`) |
+| Project schema (`CLAW_PROJ_ID`) | `gateway_llm_project_model.api_key_ciphertext` (same AES-GCM) |
 | Legacy singleton schema | `gateway_global_settings.llm_model_api_keys_json` |
 
 When forwarding HTTP or WebSocket requests to the upstream LLM:
@@ -46,6 +49,7 @@ Copy [`.env.example`](../.env.example) to `.env` and set the **Mode B** block (p
 |----------|----------|---------|
 | `CLAW_CLUSTER_ID` | Yes | Cluster label; must match http-gateway-rs |
 | `CLAW_GATEWAY_DATABASE_URL` | Yes | PostgreSQL URL (same DB as gateway) |
+| `CLAW_PROJ_ID` | No | Required on project observe sandboxes; ≥1 loads `gateway_llm_project_*` |
 | `CLAW_GATEWAY_LLM_CONFIG_POLL_INTERVAL_SECS` | No | Upstream + API key refresh interval (default `30`) |
 | `CLAUDE_TAP_PORT` | No | Proxy listen port (default `8080`) |
 

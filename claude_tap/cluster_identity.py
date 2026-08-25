@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 CLUSTER_ID_ENV = "CLAW_CLUSTER_ID"
 GATEWAY_DATABASE_URL_ENV = "CLAW_GATEWAY_DATABASE_URL"
+PROJ_ID_ENV = "CLAW_PROJ_ID"
 
 _CLUSTER_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -54,6 +55,25 @@ def gateway_database_url_from_env() -> str:
 
 def claw_gateway_env_configured() -> bool:
     return bool(os.environ.get(CLUSTER_ID_ENV, "").strip() and os.environ.get(GATEWAY_DATABASE_URL_ENV, "").strip())
+
+
+def gateway_proj_id_from_env() -> int | None:
+    """Optional observe-proj scope: read ``CLAW_PROJ_ID`` (≥1). Author: kejiqing"""
+    return parse_gateway_proj_id(os.environ.get(PROJ_ID_ENV, ""))
+
+
+def parse_gateway_proj_id(raw: str) -> int | None:
+    """Parse ``CLAW_PROJ_ID`` raw value: empty → None; else integer ≥ 1. Author: kejiqing"""
+    raw = raw.strip()
+    if not raw:
+        return None
+    try:
+        proj_id = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{PROJ_ID_ENV} must be an integer ≥ 1") from exc
+    if proj_id < 1:
+        raise ValueError(f"{PROJ_ID_ENV} must be an integer ≥ 1")
+    return proj_id
 
 
 def parse_pg_url(url: str) -> PgUrlParts:

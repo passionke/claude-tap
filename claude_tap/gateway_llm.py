@@ -1,4 +1,4 @@
-"""Load active gateway LLM from PostgreSQL (gateway_llm_cluster_* tables). Author: kejiqing"""
+"""Load active gateway LLM from PostgreSQL (cluster or project tables). Author: kejiqing"""
 
 from __future__ import annotations
 
@@ -112,11 +112,104 @@ def _runtime_from_revision(
     )
 
 
-def load_active_llm_runtime_sync(conn: Any, cluster_id: str) -> ActiveLlmRuntime | None:
-    """Load active LLM for ``CLAW_CLUSTER_ID`` from cluster tables (http-gateway-rs source of truth)."""
+def load_active_project_llm_runtime_sync(
+    conn: Any, cluster_id: str, proj_id: int
+) -> ActiveLlmRuntime | None:
+    """Load active LLM for observe-proj (``CLAW_PROJ_ID`` → ``gateway_llm_project_*``).
+
+    Same AES-GCM key material as cluster tables (``encrypt_llm_api_key(cluster_id, …)``).
+    Author: kejiqing
+    """
+    cluster_id = cluster_id.strip()
+    if not cluster_id or proj_id < 1:
+        return None
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT active_model_id, active_model_rev
+              FROM gateway_llm_project_state
+             WHERE cluster_id = %s AND proj_id = %s
+            """,
+            (cluster_id, proj_id),
+        )
+        state = cur.fetchone()
+    if state is None:
+        log.warning(
+            "No gateway_llm_project_state for cluster=%s proj_id=%s",
+            cluster_id,
+            proj_id,
+        )
+        return None
+    active_id, active_rev = (state[0] or "").strip(), (state[1] or "").strip()
+    if not active_id or not active_rev:
+        log.warning(
+            "Empty active project LLM for cluster=%s proj_id=%s",
+            cluster_id,
+            proj_id,
+        )
+        return None
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT base_model_url, model_name
+              FROM gateway_llm_project_revision
+             WHERE cluster_id = %s AND proj_id = %s
+               AND model_id = %s AND model_rev = %s
+            """,
+            (cluster_id, proj_id, active_id, active_rev),
+        )
+        rev_row = cur.fetchone()
+    if rev_row is None:
+        log.warning(
+            "Missing gateway_llm_project_revision for cluster=%s proj_id=%s model=%s rev=%s",
+            cluster_id,
+            proj_id,
+            active_id,
+            active_rev,
+        )
+        return None
+
+    api_key = ""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT api_key_ciphertext, base_model_url, model_name
+              FROM gateway_llm_project_model
+             WHERE cluster_id = %s AND proj_id = %s AND model_id = %s
+            """,
+            (cluster_id, proj_id, active_id),
+        )
+        model_row = cur.fetchone()
+    if model_row is not None:
+        api_key = decrypt_llm_api_key(cluster_id, model_row[0] or "") or ""
+        base_url = rev_row[0] or model_row[1] or ""
+        model_name = rev_row[1] or model_row[2] or ""
+    else:
+        base_url, model_name = rev_row[0], rev_row[1]
+
+    return _runtime_from_revision(
+        model_id=active_id,
+        model_rev=active_rev,
+        base_model_url=base_url or "",
+        model_name=model_name or "",
+        api_key=api_key,
+    )
+
+
+def load_active_llm_runtime_sync(
+    conn: Any, cluster_id: str, *, proj_id: int | None = None
+) -> ActiveLlmRuntime | None:
+    """Load active LLM: project tables when ``proj_id`` set, else cluster tables.
+
+    Author: kejiqing
+    """
     cluster_id = cluster_id.strip()
     if not cluster_id:
         return None
+    if proj_id is not None and proj_id >= 1:
+        return load_active_project_llm_runtime_sync(conn, cluster_id, proj_id)
 
     with conn.cursor() as cur:
         cur.execute(
@@ -230,7 +323,12 @@ def _load_active_llm_runtime_legacy(conn: Any) -> ActiveLlmRuntime | None:
     )
 
 
-def fetch_active_llm_runtime(database_url: str, cluster_id: str) -> ActiveLlmRuntime | None:
+def fetch_active_llm_runtime(
+    database_url: str,
+    cluster_id: str,
+    *,
+    proj_id: int | None = None,
+) -> ActiveLlmRuntime | None:
     try:
         import psycopg
     except ImportError as exc:
@@ -239,12 +337,17 @@ def fetch_active_llm_runtime(database_url: str, cluster_id: str) -> ActiveLlmRun
 
     try:
         with psycopg.connect(database_url) as conn:
-            return load_active_llm_runtime_sync(conn, cluster_id)
+            return load_active_llm_runtime_sync(conn, cluster_id, proj_id=proj_id)
     except Exception as exc:
         log.error("Failed to load active LLM from PostgreSQL: %s", exc)
         return None
 
 
-def fetch_active_upstream_target(database_url: str, cluster_id: str) -> str | None:
-    runtime = fetch_active_llm_runtime(database_url, cluster_id)
+def fetch_active_upstream_target(
+    database_url: str,
+    cluster_id: str,
+    *,
+    proj_id: int | None = None,
+) -> str | None:
+    runtime = fetch_active_llm_runtime(database_url, cluster_id, proj_id=proj_id)
     return runtime.base_model_url if runtime else None

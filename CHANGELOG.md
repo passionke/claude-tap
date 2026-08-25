@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Gateway mode: when `CLAW_PROJ_ID` is set (project observe sandbox), load upstream URL + API key from `gateway_llm_project_*` instead of always using cluster tables. Fixes project override models (e.g. `deepseek-v4-pro`) failing with the global key's `key_model_access_denied`. Author: kejiqing
+
 ## [0.0.15] - 2026-08-07
 
 ### Fixed

@@ -7,6 +7,7 @@ use std::sync::OnceLock;
 
 pub const CLUSTER_ID_ENV: &str = "CLAW_CLUSTER_ID";
 pub const GATEWAY_DATABASE_URL_ENV: &str = "CLAW_GATEWAY_DATABASE_URL";
+pub const PROJ_ID_ENV: &str = "CLAW_PROJ_ID";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PgUrlParts {
@@ -65,6 +66,27 @@ pub fn claw_gateway_env_configured() -> bool {
     let a = std::env::var(CLUSTER_ID_ENV).unwrap_or_default();
     let b = std::env::var(GATEWAY_DATABASE_URL_ENV).unwrap_or_default();
     !a.trim().is_empty() && !b.trim().is_empty()
+}
+
+/// Parse `CLAW_PROJ_ID` raw value: empty → None; else integer ≥ 1. Author: kejiqing
+pub fn parse_gateway_proj_id(raw: &str) -> Result<Option<i64>, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let proj_id: i64 = raw
+        .parse()
+        .map_err(|_| format!("{PROJ_ID_ENV} must be an integer ≥ 1"))?;
+    if proj_id < 1 {
+        return Err(format!("{PROJ_ID_ENV} must be an integer ≥ 1"));
+    }
+    Ok(Some(proj_id))
+}
+
+/// Optional observe-proj scope: `CLAW_PROJ_ID` ≥ 1. Author: kejiqing
+pub fn gateway_proj_id_from_env() -> Result<Option<i64>, String> {
+    let raw = std::env::var(PROJ_ID_ENV).unwrap_or_default();
+    parse_gateway_proj_id(&raw)
 }
 
 pub fn parse_pg_url(url: &str) -> Result<PgUrlParts, String> {
@@ -210,5 +232,24 @@ mod tests {
         assert!(body.get("dbHost").is_none());
         assert_eq!(body["ok"], true);
         assert_eq!(body["clusterId"], "local-dev");
+    }
+
+    #[test]
+    fn parse_gateway_proj_id_empty_is_none() {
+        assert_eq!(parse_gateway_proj_id("").unwrap(), None);
+        assert_eq!(parse_gateway_proj_id("  ").unwrap(), None);
+    }
+
+    #[test]
+    fn parse_gateway_proj_id_accepts_positive() {
+        assert_eq!(parse_gateway_proj_id("297").unwrap(), Some(297));
+        assert_eq!(parse_gateway_proj_id(" 1 ").unwrap(), Some(1));
+    }
+
+    #[test]
+    fn parse_gateway_proj_id_rejects_zero_and_invalid() {
+        assert!(parse_gateway_proj_id("0").is_err());
+        assert!(parse_gateway_proj_id("-3").is_err());
+        assert!(parse_gateway_proj_id("abc").is_err());
     }
 }
