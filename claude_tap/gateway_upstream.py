@@ -82,10 +82,7 @@ class GatewayLlmUpstreamStore:
 
     def _missing_tables_hint(self) -> str:
         if self.proj_id is not None:
-            return (
-                "tables gateway_llm_project_state / gateway_llm_project_revision "
-                f"(CLAW_PROJ_ID={self.proj_id})"
-            )
+            return f"tables gateway_llm_project_state / gateway_llm_project_revision (CLAW_PROJ_ID={self.proj_id})"
         return "tables gateway_llm_cluster_state / gateway_llm_cluster_revision"
 
     def snapshot(self) -> UpstreamSnapshot:
@@ -97,9 +94,7 @@ class GatewayLlmUpstreamStore:
         return self._snapshot
 
     def _fetch(self) -> ActiveLlmRuntime | None:
-        return fetch_active_llm_runtime(
-            self.database_url, self.cluster_id, proj_id=self.proj_id
-        )
+        return fetch_active_llm_runtime(self.database_url, self.cluster_id, proj_id=self.proj_id)
 
     def load_initial(self) -> ActiveLlmRuntime:
         runtime = self._fetch()
@@ -136,11 +131,7 @@ class GatewayLlmUpstreamStore:
         prev_key = self._runtime.api_key if self._runtime else ""
         prev_model = self._runtime.model_name if self._runtime else ""
         self._apply_runtime(runtime)
-        changed = (
-            runtime.base_model_url != previous
-            or runtime.api_key != prev_key
-            or runtime.model_name != prev_model
-        )
+        changed = runtime.base_model_url != previous or runtime.api_key != prev_key or runtime.model_name != prev_model
         if changed:
             log.info(
                 "Upstream from PostgreSQL (%s) -> %s (model=%s)",

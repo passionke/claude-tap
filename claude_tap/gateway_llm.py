@@ -112,9 +112,7 @@ def _runtime_from_revision(
     )
 
 
-def load_active_project_llm_runtime_sync(
-    conn: Any, cluster_id: str, proj_id: int
-) -> ActiveLlmRuntime | None:
+def load_active_project_llm_runtime_sync(conn: Any, cluster_id: str, proj_id: int) -> ActiveLlmRuntime | None:
     """Load active LLM for observe-proj (``CLAW_PROJ_ID`` → ``gateway_llm_project_*``).
 
     Same AES-GCM key material as cluster tables (``encrypt_llm_api_key(cluster_id, …)``).
@@ -198,9 +196,7 @@ def load_active_project_llm_runtime_sync(
     )
 
 
-def load_active_llm_runtime_sync(
-    conn: Any, cluster_id: str, *, proj_id: int | None = None
-) -> ActiveLlmRuntime | None:
+def load_active_llm_runtime_sync(conn: Any, cluster_id: str, *, proj_id: int | None = None) -> ActiveLlmRuntime | None:
     """Load active LLM: project tables when ``proj_id`` set, else cluster tables.
 
     Author: kejiqing
