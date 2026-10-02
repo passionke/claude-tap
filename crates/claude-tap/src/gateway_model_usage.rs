@@ -116,12 +116,14 @@ pub fn maybe_spawn_insert(
     };
     let turn_id = turn_id.to_string();
     let provider = provider.map(str::to_string);
+    let base_url = store.target_and_key().0;
     tokio::spawn(async move {
         if let Err(e) = store
             .insert_model_usage(
                 &turn_id,
                 provider.as_deref(),
                 &model,
+                &base_url,
                 norm,
                 Some(latency_ms),
                 "tap",
@@ -140,6 +142,7 @@ impl GatewayLlmUpstreamStore {
         turn_id: &str,
         provider: Option<&str>,
         model: &str,
+        base_url: &str,
         usage: NormalizedUsage,
         latency_ms: Option<i64>,
         source: &str,
@@ -155,16 +158,17 @@ impl GatewayLlmUpstreamStore {
             .execute(
                 r#"
                 INSERT INTO gateway_model_usage (
-                    turn_id, provider, model,
+                    turn_id, provider, model, base_url,
                     input_tokens, output_tokens,
                     cache_creation_input_tokens, cache_read_input_tokens,
                     latency_ms, source
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 "#,
                 &[
                     &turn_id,
                     &provider,
                     &model,
+                    &base_url,
                     &usage.input_tokens,
                     &usage.output_tokens,
                     &usage.cache_creation_input_tokens,
