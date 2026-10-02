@@ -1,7 +1,9 @@
 //! Reverse HTTP/SSE/WS proxy. Author: kejiqing
 
 use crate::allowlist::is_allowed_path;
-use crate::claw_session::{extract_from_map, strip_claw_session_header};
+use crate::claw_session::{
+    extract_from_map, extract_turn_from_map, strip_claw_session_header, strip_claw_turn_header,
+};
 use crate::client_config::ClientName;
 use crate::gateway_upstream::{apply_gateway_auth_headers, GatewayLlmUpstreamStore};
 use crate::headers::{filter_headers, is_hop_by_hop};
@@ -98,8 +100,10 @@ pub async fn proxy_handler(
     };
 
     let claw = extract_from_map(&headers_in);
+    let claw_turn = extract_turn_from_map(&headers_in);
     let mut fwd_headers = headers_in.clone();
     strip_claw_session_header(&mut fwd_headers);
+    strip_claw_turn_header(&mut fwd_headers);
 
     let (target, strip) = resolve_upstream(
         &state.target_url,
@@ -188,6 +192,7 @@ pub async fn proxy_handler(
         return handle_streaming(
             state,
             claw,
+            claw_turn,
             turn,
             req_id,
             method,
@@ -211,6 +216,15 @@ pub async fn proxy_handler(
     };
 
     let parsed_body = parse_response_body(&resp_headers, &resp_bytes);
+    spawn_model_usage_insert(
+        &state,
+        claw_turn.as_deref(),
+        &body_json,
+        &parsed_body,
+        &target,
+        &upstream_url,
+        started,
+    );
     maybe_write_record(
         &state,
         claw.as_deref(),
@@ -243,6 +257,7 @@ pub async fn proxy_handler(
 async fn handle_streaming(
     state: ProxyState,
     claw: Option<String>,
+    claw_turn: Option<String>,
     turn: i64,
     req_id: String,
     method: Method,
@@ -264,6 +279,7 @@ async fn handle_streaming(
         upstream,
         state,
         claw,
+        claw_turn,
         turn,
         req_id,
         method,
@@ -299,6 +315,7 @@ pub fn streaming_proxy_body<S, E>(
     upstream: S,
     state: ProxyState,
     claw: Option<String>,
+    claw_turn: Option<String>,
     turn: i64,
     req_id: String,
     method: Method,
@@ -321,6 +338,20 @@ where
             .iter()
             .map(|e| json!({"event": e.event, "data": e.data}))
             .collect();
+        let upstream_url = format!(
+            "{}/{}",
+            target.trim_end_matches('/'),
+            path.trim_start_matches('/')
+        );
+        spawn_model_usage_insert(
+            &state,
+            claw_turn.as_deref(),
+            &body_json,
+            &reconstructed,
+            &target,
+            &upstream_url,
+            started,
+        );
         // sse_events are written into JSONL on disk here — Live has no chunk deque.
         maybe_write_record(
             &state,
@@ -374,6 +405,50 @@ where
             cb(reassembler);
         }
     }
+}
+
+/// Fire-and-forget `gateway_model_usage` INSERT (never blocks the proxy response). Author: kejiqing
+///
+/// Only runs when the request carried a non-empty `claw-turn-id` and a gateway store is present.
+/// Failures are logged as warnings per §6.1 rule 4 (INSERT must not break proxying).
+fn spawn_model_usage_insert(
+    state: &ProxyState,
+    claw_turn: Option<&str>,
+    req_body: &Value,
+    resp_body: &Value,
+    base_url: &str,
+    upstream_url: &str,
+    started: Instant,
+) {
+    let Some(turn_id) = claw_turn.map(str::trim).filter(|s| !s.is_empty()) else {
+        return;
+    };
+    let Some(gateway) = state.gateway.clone() else {
+        return;
+    };
+    let model = req_body
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let usage = resp_body.get("usage").cloned().unwrap_or(Value::Null);
+    let turn_id = turn_id.to_string();
+    let base_url = base_url.to_string();
+    let upstream_url = upstream_url.to_string();
+    let latency_ms = started.elapsed().as_millis() as u64;
+    tokio::spawn(async move {
+        let row = crate::model_usage::build_model_usage_row(
+            &turn_id,
+            &model,
+            &base_url,
+            &upstream_url,
+            &usage,
+            latency_ms,
+        );
+        if let Err(e) = gateway.insert_model_usage(&row).await {
+            tracing::warn!("gateway_model_usage insert failed: {e}");
+        }
+    });
 }
 
 fn maybe_write_record(

@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 use std::sync::OnceLock;
 
 pub const CLAW_SESSION_HEADER: &str = "claw-session-id";
+pub const CLAW_TURN_HEADER: &str = "claw-turn-id";
 const MAX_SLUG_LEN: usize = 48;
 
 fn sanitize_re() -> &'static Regex {
@@ -38,6 +39,37 @@ pub fn extract_from_map(headers: &std::collections::HashMap<String, String>) -> 
 
 pub fn strip_claw_session_header(headers: &mut std::collections::HashMap<String, String>) {
     headers.retain(|k, _| !k.eq_ignore_ascii_case(CLAW_SESSION_HEADER));
+}
+
+/// Extract `claw-turn-id` from a generic slice of (key, value) pairs. Author: kejiqing
+pub fn extract_claw_turn_id(headers: &[(impl AsRef<str>, impl AsRef<str>)]) -> Option<String> {
+    for (k, v) in headers {
+        if k.as_ref().eq_ignore_ascii_case(CLAW_TURN_HEADER) {
+            let s = v.as_ref().trim();
+            if !s.is_empty() {
+                return Some(s.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Extract `claw-turn-id` from a header map (case-insensitive). Author: kejiqing
+pub fn extract_turn_from_map(headers: &std::collections::HashMap<String, String>) -> Option<String> {
+    for (k, v) in headers {
+        if k.eq_ignore_ascii_case(CLAW_TURN_HEADER) {
+            let s = v.trim();
+            if !s.is_empty() {
+                return Some(s.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Remove `claw-turn-id` (any casing) from a mutable header map before forwarding upstream.
+pub fn strip_claw_turn_header(headers: &mut std::collections::HashMap<String, String>) {
+    headers.retain(|k, _| !k.eq_ignore_ascii_case(CLAW_TURN_HEADER));
 }
 
 pub fn sanitize_filename_suffix(raw: &str) -> String {
@@ -104,5 +136,60 @@ mod tests {
             rel_posix(std::path::Path::new(r"a\b\c")),
             "a/b/c"
         );
+    }
+
+    #[test]
+    fn extract_claw_turn_id_basic() {
+        let headers = vec![("claw-turn-id", "T_abc")];
+        assert_eq!(extract_claw_turn_id(&headers).as_deref(), Some("T_abc"));
+    }
+
+    #[test]
+    fn extract_claw_turn_id_case_insensitive() {
+        let headers = vec![("CLAW-TURN-ID", "T_abc")];
+        assert_eq!(extract_claw_turn_id(&headers).as_deref(), Some("T_abc"));
+    }
+
+    #[test]
+    fn extract_claw_turn_id_trims() {
+        let headers = vec![("claw-turn-id", "  T_abc  ")];
+        assert_eq!(extract_claw_turn_id(&headers).as_deref(), Some("T_abc"));
+    }
+
+    #[test]
+    fn extract_claw_turn_id_blank_is_none() {
+        let headers = vec![("claw-turn-id", "   ")];
+        assert!(extract_claw_turn_id(&headers).is_none());
+    }
+
+    #[test]
+    fn extract_claw_turn_id_missing_is_none() {
+        let headers = vec![("X-Other", "1")];
+        assert!(extract_claw_turn_id(&headers).is_none());
+    }
+
+    #[test]
+    fn extract_turn_from_map_basic() {
+        let map = std::collections::HashMap::from([("claw-turn-id".into(), "T_abc".into())]);
+        assert_eq!(extract_turn_from_map(&map).as_deref(), Some("T_abc"));
+    }
+
+    #[test]
+    fn strip_claw_turn_header_removes_any_case() {
+        let mut map = std::collections::HashMap::from([
+            ("Claw-Turn-Id".into(), "T_abc".into()),
+            ("Authorization".into(), "y".into()),
+        ]);
+        strip_claw_turn_header(&mut map);
+        assert!(!map.keys().any(|k| k.eq_ignore_ascii_case("claw-turn-id")));
+        assert!(map.contains_key("Authorization"));
+    }
+
+    #[test]
+    fn strip_claw_turn_header_noop_when_absent() {
+        let mut map = std::collections::HashMap::from([("Authorization".into(), "y".into())]);
+        strip_claw_turn_header(&mut map);
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key("Authorization"));
     }
 }

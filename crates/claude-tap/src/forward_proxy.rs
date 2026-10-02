@@ -5,7 +5,9 @@
 //! TLS is accepted directly on the client socket (no localhost bounce).
 
 use crate::certs::CertificateAuthority;
-use crate::claw_session::{extract_from_map, strip_claw_session_header};
+use crate::claw_session::{
+    extract_from_map, extract_turn_from_map, strip_claw_session_header, strip_claw_turn_header,
+};
 use crate::client_config::ClientName;
 use crate::gateway_upstream::{apply_gateway_auth_headers, GatewayLlmUpstreamStore};
 use crate::headers::{filter_headers, is_hop_by_hop};
@@ -199,6 +201,7 @@ impl ForwardProxyServer {
         }
 
         let claw = extract_from_map(&headers);
+        let claw_turn = extract_turn_from_map(&headers);
         let turn = if let Some(ref cid) = claw {
             self.dispatcher.alloc_turn(cid).unwrap_or(0)
         } else {
@@ -231,6 +234,7 @@ impl ForwardProxyServer {
 
         let mut fwd_headers = headers.clone();
         strip_claw_session_header(&mut fwd_headers);
+        strip_claw_turn_header(&mut fwd_headers);
         if let Some(g) = &self.gateway {
             let (_, key) = g.target_and_key();
             apply_gateway_auth_headers(&mut fwd_headers, self.client, key.as_deref());
@@ -280,6 +284,7 @@ impl ForwardProxyServer {
                 &headers,
                 &req_body,
                 claw.as_deref(),
+                claw_turn.as_deref(),
                 &log_prefix,
                 status,
                 &reason,
@@ -299,6 +304,7 @@ impl ForwardProxyServer {
                 &headers,
                 &req_body,
                 claw.as_deref(),
+                claw_turn.as_deref(),
                 &log_prefix,
                 status,
                 &reason,
@@ -308,6 +314,46 @@ impl ForwardProxyServer {
             .await?;
         }
         Ok(())
+    }
+
+    /// Fire-and-forget `gateway_model_usage` INSERT (never blocks the proxy response). Author: kejiqing
+    fn spawn_model_usage_insert(
+        &self,
+        claw_turn: Option<&str>,
+        req_body: &Value,
+        resp_body: &Value,
+        request_url: &str,
+        started: Instant,
+    ) {
+        let Some(turn_id) = claw_turn.map(str::trim).filter(|s| !s.is_empty()) else {
+            return;
+        };
+        let Some(gateway) = self.gateway.clone() else {
+            return;
+        };
+        let model = req_body
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let usage = resp_body.get("usage").cloned().unwrap_or(Value::Null);
+        let (base_url, _) = gateway.target_and_key();
+        let turn_id = turn_id.to_string();
+        let request_url = request_url.to_string();
+        let latency_ms = started.elapsed().as_millis() as u64;
+        tokio::spawn(async move {
+            let row = crate::model_usage::build_model_usage_row(
+                &turn_id,
+                &model,
+                &base_url,
+                &request_url,
+                &usage,
+                latency_ms,
+            );
+            if let Err(e) = gateway.insert_model_usage(&row).await {
+                tracing::warn!("gateway_model_usage insert failed: {e}");
+            }
+        });
     }
 
     async fn handle_streaming<S>(
@@ -322,6 +368,7 @@ impl ForwardProxyServer {
         req_headers: &HashMap<String, String>,
         req_body: &Value,
         claw: Option<&str>,
+        claw_turn: Option<&str>,
         log_prefix: &str,
         status: u16,
         reason: &str,
@@ -383,6 +430,18 @@ impl ForwardProxyServer {
             .iter()
             .map(|e| json!({"event": e.event, "data": e.data}))
             .collect();
+        let request_url = format!(
+            "{}{}",
+            upstream_base.trim_end_matches('/'),
+            path
+        );
+        self.spawn_model_usage_insert(
+            claw_turn,
+            req_body,
+            &reconstructed,
+            &request_url,
+            started,
+        );
         write_http_record(
             &self.dispatcher,
             claw,
@@ -414,6 +473,7 @@ impl ForwardProxyServer {
         req_headers: &HashMap<String, String>,
         req_body: &Value,
         claw: Option<&str>,
+        claw_turn: Option<&str>,
         log_prefix: &str,
         status: u16,
         reason: &str,
@@ -430,6 +490,13 @@ impl ForwardProxyServer {
             "{log_prefix} <- {status} ({duration_ms}ms, {} bytes)",
             resp_bytes.len()
         );
+
+        let request_url = format!(
+            "{}{}",
+            upstream_base.trim_end_matches('/'),
+            path
+        );
+        self.spawn_model_usage_insert(claw_turn, req_body, &resp_body, &request_url, started);
 
         write_http_record(
             &self.dispatcher,
@@ -493,6 +560,7 @@ impl ForwardProxyServer {
 
         let mut fwd_headers = headers.clone();
         strip_claw_session_header(&mut fwd_headers);
+        strip_claw_turn_header(&mut fwd_headers);
         if let Some(g) = &self.gateway {
             let (_, key) = g.target_and_key();
             apply_gateway_auth_headers(&mut fwd_headers, self.client, key.as_deref());

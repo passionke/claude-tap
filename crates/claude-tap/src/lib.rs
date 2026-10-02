@@ -14,6 +14,7 @@ pub mod gateway_upstream;
 pub mod headers;
 pub mod health;
 pub mod live;
+pub mod model_usage;
 pub mod path_util;
 pub mod proxy;
 pub mod run;

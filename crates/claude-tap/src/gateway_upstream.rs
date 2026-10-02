@@ -96,6 +96,56 @@ impl GatewayLlmUpstreamStore {
         let rt = self.runtime.read();
         (rt.base_url.clone(), rt.api_key.clone())
     }
+
+    /// Record one LLM call into `gateway_model_usage` (`source=tap`). Author: kejiqing
+    ///
+    /// §6.1: only called when the request carried a non-empty `claw-turn-id`; a missing turn
+    /// is a no-op. Opens a fresh PG connection per call (matches the reload path); failures are
+    /// returned to the caller which only warns — they must never block the proxy response.
+    pub async fn insert_model_usage(
+        &self,
+        row: &crate::model_usage::ModelUsageRow,
+    ) -> anyhow::Result<()> {
+        if row.turn_id.is_empty() {
+            return Ok(());
+        }
+        let (client, connection) =
+            tokio_postgres::connect(&self.database_url, tokio_postgres::NoTls).await?;
+        tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                tracing::error!("postgres connection error: {e}");
+            }
+        });
+        let turn_id = row.turn_id.as_str();
+        let provider = row.provider;
+        let model = row.model.as_str();
+        let base_url = row.base_url.as_str();
+        let input: i32 = i32::try_from(row.usage.input).unwrap_or(i32::MAX);
+        let output: i32 = i32::try_from(row.usage.output).unwrap_or(i32::MAX);
+        let cache_create: i32 = i32::try_from(row.usage.cache_create).unwrap_or(i32::MAX);
+        let cache_read: i32 = i32::try_from(row.usage.cache_read).unwrap_or(i32::MAX);
+        let latency: i64 = i64::try_from(row.latency_ms).unwrap_or(i64::MAX);
+        client
+            .execute(
+                r#"INSERT INTO gateway_model_usage
+                     (turn_id, provider, model, base_url, input_tokens, output_tokens,
+                      cache_creation_input_tokens, cache_read_input_tokens, latency_ms, source)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'tap')"#,
+                &[
+                    &turn_id,
+                    &provider,
+                    &model,
+                    &base_url,
+                    &input,
+                    &output,
+                    &cache_create,
+                    &cache_read,
+                    &latency,
+                ],
+            )
+            .await?;
+        Ok(())
+    }
 }
 
 async fn load_active_runtime(
@@ -353,5 +403,20 @@ mod tests {
             llm_api_key_for(&keys, "mid", "rev").as_deref(),
             Some("from-slot")
         );
+    }
+
+    #[tokio::test]
+    async fn insert_model_usage_requires_turn_id() {
+        // Empty turn_id must short-circuit before opening any PG connection. Author: kejiqing
+        let s = GatewayLlmUpstreamStore::new("c".into(), "postgres://u:p@invalid/db".into());
+        let row = crate::model_usage::build_model_usage_row(
+            "   ",
+            "m",
+            "https://x",
+            "https://x/v1/messages",
+            &serde_json::Value::Null,
+            0,
+        );
+        assert!(s.insert_model_usage(&row).await.is_ok());
     }
 }
