@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.19] - 2026-10-03
+
+### Added
+- Record the effective upstream LLM `base_url` into `gateway_model_usage.base_url` (threaded from `GatewayLlmUpstreamStore::target_and_key()`), so the gateway read-side exposes per-call `baseUrl` in turn usage. Author: kejiqing
+
 ## [0.0.18] - 2026-08-25
 
 ### Fixed
